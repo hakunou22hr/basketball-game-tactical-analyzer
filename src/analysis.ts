@@ -13,7 +13,7 @@ const advice: Record<Perspective, Record<Rating, string>> = {
 export const coachingAdvice = (perspective: Perspective, rating: Rating) => advice[perspective][rating]
 export const formatTime = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`
 export const summarize = (moments: Moment[]) => ({
-  good: moments.filter(m => m.rating === 'GOOD PLAY').length,
-  check: moments.filter(m => m.rating === 'CHECK').length,
-  fix: moments.filter(m => m.rating === 'FIX').length
+  good: moments.filter(m => m.rating === 'GOOD PLAY' || m.rating === 'AI GOOD').length,
+  check: moments.filter(m => m.rating === 'CHECK' || m.rating === 'AI CHECK' || m.rating === 'AI KEY PLAY').length,
+  fix: moments.filter(m => m.rating === 'FIX' || m.rating === 'AI FIX').length
 })

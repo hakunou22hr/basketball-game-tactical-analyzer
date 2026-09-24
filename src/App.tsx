@@ -3,6 +3,9 @@ import { coachingAdvice, formatTime, summarize } from './analysis'
 import { loadGames, saveGame } from './db'
 import { download, toCsv, toHtml } from './export'
 import type { Game, Moment, Perspective, Rating } from './types'
+import { extractFrames, resolveRange } from './ai/frameExtractor'
+import { getAnalysisEndpoint, requestAnalysis } from './ai/client'
+import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
 
 const perspectives: { name: Perspective; icon: string }[] = [
   {name:'全体',icon:'⌗'}, {name:'オフェンス',icon:'↗'}, {name:'ディフェンス',icon:'◇'}, {name:'ブレイク',icon:'»'},
@@ -30,6 +33,12 @@ export default function App() {
   const [demo, setDemo] = useState(false)
   const [view, setView] = useState<'analyze'|'review'>('analyze')
   const [saved, setSaved] = useState<Game[]>([])
+  const [analysisRange, setAnalysisRange] = useState<AnalysisRange>('last60')
+  const [selection, setSelection] = useState({ start: 0, end: 60 })
+  const [aiResult, setAiResult] = useState<AiAnalysis | null>(null)
+  const [aiError, setAiError] = useState('')
+  const [progress, setProgress] = useState('')
+  const [showTimeout, setShowTimeout] = useState(false)
   const stats = useMemo(() => summarize(moments), [moments])
   const game = (): Game => ({ id: 'current-game', title: 'ゲーム分析', team, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), moments })
   useEffect(() => { loadGames().then(setSaved).catch(() => {}) }, [])
@@ -43,6 +52,25 @@ export default function App() {
   function jump(second: number) { setTime(second); if (video.current) video.current.currentTime = second }
   async function persist() { const g = game(); await saveGame(g); setSaved(await loadGames()) }
   function exportAs(kind: 'json'|'csv'|'html'|'pdf') { const g=game(); if(kind==='pdf'){ const w=window.open(); if(w){w.document.write(toHtml(g));w.document.close();w.print()} return } const data=kind==='json'?JSON.stringify(g,null,2):kind==='csv'?toCsv(g):toHtml(g); download(data, kind==='json'?'application/json':kind==='csv'?'text/csv':'text/html',`game-review.${kind}`) }
+  async function analyzeVideo() {
+    setAiError(''); setAiResult(null); setShowTimeout(false)
+    if (!getAnalysisEndpoint()) { setAiError('AI解析サーバーがまだ設定されていません'); return }
+    if (!video.current || !source) { setAiError('解析する試合映像を読み込んでください'); return }
+    try {
+      const range = resolveRange(analysisRange, time, duration, selection)
+      setProgress('フレーム抽出中'); const frames = await extractFrames(video.current, range, team, perspective)
+      setProgress('攻撃解析中'); await new Promise(resolve => setTimeout(resolve, 200))
+      setProgress('守備解析中'); const resultPromise = requestAnalysis({ team, perspective, range, frames })
+      await new Promise(resolve => setTimeout(resolve, 200)); setProgress('ゲームプラン生成中')
+      setAiResult(await resultPromise)
+    } catch (error) { setAiError(error instanceof Error ? error.message : 'AI解析に失敗しました') }
+    finally { setProgress('') }
+  }
+  function addAiEvidence() {
+    if (!aiResult) return
+    const additions: Moment[] = aiResult.evidence.map(e => ({ id: crypto.randomUUID(), time: Math.min(duration, Math.max(0, e.timestamp)), perspective, rating: e.tag, note: e.description, createdAt: new Date().toISOString() }))
+    setMoments(current => [...current, ...additions].sort((a,b) => a.time-b.time))
+  }
 
   return <div className="app">
     <header><div className="brand"><div className="ball">◉</div><div><strong>TACTICAL <i>ANALYZER</i></strong><small>BASKETBALL GAME INTELLIGENCE</small></div></div>
@@ -74,10 +102,30 @@ export default function App() {
         {moments.length ? <div className="moment-list">{moments.map(m=><button key={m.id} onClick={()=>jump(m.time)} className={m.rating==='GOOD PLAY'?'good':m.rating.toLowerCase()}><time>{formatTime(m.time)}</time><i/><div><b>{m.rating}</b><span>{m.perspective} · {m.note}</span></div><em>▶</em></button>)}</div> : <div className="empty-list"><b>記録した瞬間がここに並びます</b><span>評価ボタンを選び「この瞬間を記録」を押してください</span></div>}
       </section>
 
-      <aside className={`coach ${rating==='GOOD PLAY'?'good':rating.toLowerCase()}`}><div className="coach-label">⚡ 今すぐ選手に伝える</div><div className="coach-body"><span className="quote">“</span><p>{coachingAdvice(perspective,rating)}</p><div><b>{perspective}</b><span>{rating}</span></div></div></aside>
+      <section className="ai-panel panel">
+        <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span>動画全体ではなく抽出フレームのみ送信</span></div>
+        <div className="range-options">{([['last30','直近30秒'],['last60','直近60秒'],['selection','選択区間'],['all','動画全体']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
+        {analysisRange==='selection'&&<div className="selection-fields"><label>開始（秒）<input type="number" min="0" max={duration} value={selection.start} onChange={e=>setSelection(v=>({...v,start:+e.target.value}))}/></label><label>終了（秒）<input type="number" min="0" max={duration} value={selection.end} onChange={e=>setSelection(v=>({...v,end:+e.target.value}))}/></label></div>}
+        <button className="analyze-button" disabled={!!progress} onClick={analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
+        {progress&&<div className="progress" aria-live="polite">{['フレーム抽出中','攻撃解析中','守備解析中','ゲームプラン生成中'].map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
+        {aiError&&<div className="ai-error" role="alert">{aiError}<small>手動タグと簡易ルールアドバイスは引き続き利用できます。</small></div>}
+      </section>
+
+      {aiResult&&<GamePlan result={aiResult} showTimeout={showTimeout} onTimeout={()=>setShowTimeout(v=>!v)} onAddTimeline={addAiEvidence}/>}
+
+      <aside className={`coach ${rating==='GOOD PLAY'?'good':rating.toLowerCase()}`}><div className="coach-label">⚡ 簡易ルールアドバイス</div><div className="coach-body"><span className="quote">“</span><p>{coachingAdvice(perspective,rating)}</p><div><b>{perspective}</b><span>{rating}</span></div></div></aside>
     </main> : <Review moments={moments} stats={stats} saved={saved} onJump={s=>{setView('analyze');setTimeout(()=>jump(s))}} onExport={exportAs} />}
-    <footer><span>TACTICAL ANALYZER · OFFLINE READY</span><span>映像データは外部へ送信されません</span></footer>
+    <footer><span>TACTICAL ANALYZER · OFFLINE READY</span><span>AI解析時は必要な抽出フレームのみを送信します</span></footer>
   </div>
+}
+
+const confidenceLabel: Record<Confidence,string> = { high:'高', medium:'中', low:'低', unknown:'判断困難' }
+function Items({items}:{items:AnalysisItem[]}) { return items.length?<ul>{items.slice(0,3).map((item,i)=><li key={i}><span>{item.text}</span><em className={`confidence ${item.confidence}`}>{confidenceLabel[item.confidence]}</em></li>)}</ul>:<p className="unknown">判断困難</p> }
+function GamePlan({result,showTimeout,onTimeout,onAddTimeline}:{result:AiAnalysis;showTimeout:boolean;onTimeout:()=>void;onAddTimeline:()=>void}) {
+  return <section className="game-plan panel"><div className="plan-head"><div><small>AI VIDEO ANALYSIS</small><h2>AI GAME PLAN</h2></div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
+    <div className="plan-grid"><article><b>① 現在の戦況</b><p>{result.summary}</p></article><article><b>② 今うまくいっていること</b><Items items={[...result.offense.working,...result.defense.working].slice(0,3)}/></article><article><b>③ 最優先で直すこと</b><Items items={[...result.offense.problems,...result.defense.problems].slice(0,3)}/></article><article><b>④ 次の3ポゼッション</b><Items items={result.nextThreePossessions}/></article><article><b>⑤ 相手への対策</b><Items items={result.defense.keyOpponent?[result.defense.keyOpponent,...result.defense.recommendations].slice(0,3):result.defense.recommendations}/></article><article><b>⑥ 継続する攻撃</b><Items items={result.offense.repeatPatterns}/></article></div>
+    <div className="plan-actions"><button className="timeout-button" onClick={onTimeout}>30秒で選手に伝える</button><button onClick={onAddTimeline}>AI重要場面をタイムラインへ追加</button></div>{showTimeout&&<div className="timeout-message"><b>TIMEOUT MESSAGE</b><p>{result.timeoutMessage}</p></div>}
+  </section>
 }
 
 function Review({moments,stats,saved,onJump,onExport}:{moments:Moment[];stats:ReturnType<typeof summarize>;saved:Game[];onJump:(n:number)=>void;onExport:(k:'json'|'csv'|'html'|'pdf')=>void}) {
