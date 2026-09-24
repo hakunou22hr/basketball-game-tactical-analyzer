@@ -21,3 +21,13 @@ npm run dev
 - Service Workerによるオフライン利用
 
 GitHub Pages: <https://hakunou22hr.github.io/basketball-game-tactical-analyzer/>
+
+## AI VIDEO ANALYSIS
+
+AI戦況解析はブラウザ内で動画から必要なJPEGフレームだけを抽出し、中継APIに送信します。動画ファイル全体は送信しません。
+
+```bash
+VITE_AI_ANALYSIS_ENDPOINT=https://your-secure-relay.example/analyze npm run dev
+```
+
+APIキーはフロントエンドに設定せず、中継API側で安全に管理してください。エンドポイント未設定時はAI解析を行わず、手動タグと簡易ルールアドバイスのみ動作します。
