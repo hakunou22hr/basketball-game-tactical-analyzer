@@ -6,6 +6,9 @@ import type { Game, Moment, Perspective, Rating } from './types'
 import { extractFrames, resolveRange } from './ai/frameExtractor'
 import { getAnalysisEndpoint, requestAnalysis } from './ai/client'
 import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
+import { captureLiveFrame } from './live/liveFrameCapture'
+import { createRecorder, replayStartTime, saveRecording } from './live/recorder'
+import type { RecordingSession } from './live/recorder'
 
 const perspectives: { name: Perspective; icon: string }[] = [
   {name:'全体',icon:'⌗'}, {name:'オフェンス',icon:'↗'}, {name:'ディフェンス',icon:'◇'}, {name:'ブレイク',icon:'»'},
@@ -22,6 +25,11 @@ const demoMoments: Moment[] = [
 
 export default function App() {
   const video = useRef<HTMLVideoElement>(null)
+  const liveVideo = useRef<HTMLVideoElement>(null)
+  const cameraStream = useRef<MediaStream | null>(null)
+  const recordingSession = useRef<RecordingSession | null>(null)
+  const previewUrlRef = useRef('')
+  const liveAnalysisBusy = useRef(false)
   const [source, setSource] = useState('')
   const [team, setTeam] = useState<'濃色'|'淡色'>('濃色')
   const [perspective, setPerspective] = useState<Perspective>('全体')
@@ -39,10 +47,46 @@ export default function App() {
   const [aiError, setAiError] = useState('')
   const [progress, setProgress] = useState('')
   const [showTimeout, setShowTimeout] = useState(false)
+  const [cameraActive, setCameraActive] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [liveAiEnabled, setLiveAiEnabled] = useState(true)
+  const [liveStatus, setLiveStatus] = useState('')
+  const [liveViewMode, setLiveViewMode] = useState<'live'|'replay'>('live')
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [replayLastThirty, setReplayLastThirty] = useState(false)
   const stats = useMemo(() => summarize(moments), [moments])
   const game = (): Game => ({ id: 'current-game', title: 'ゲーム分析', team, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), moments })
   useEffect(() => { loadGames().then(setSaved).catch(() => {}) }, [])
   useEffect(() => () => { if (source) URL.revokeObjectURL(source) }, [source])
+  useEffect(() => {
+    if (!recording) return
+    const startedAt = Date.now() - recordingSeconds * 1000
+    const timer = window.setInterval(() => setRecordingSeconds(Math.floor((Date.now() - startedAt) / 1000)), 250)
+    return () => window.clearInterval(timer)
+  }, [recording])
+  useEffect(() => () => cameraStream.current?.getTracks().forEach(track => track.stop()), [])
+  useEffect(() => () => { if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current) }, [])
+
+  useEffect(() => {
+    if (!recording || !liveAiEnabled) return
+    const analyzeFrame = async () => {
+      if (!liveVideo.current || liveAnalysisBusy.current) return
+      if (!getAnalysisEndpoint()) { setAiError('AI解析サーバーがまだ設定されていません'); return }
+      liveAnalysisBusy.current = true
+      setLiveStatus('ライブ映像をAI解析中')
+      try {
+        const frame = captureLiveFrame(liveVideo.current, team, perspective)
+        const result = await requestAnalysis({ team, perspective, range: { start: frame.timestamp, end: frame.timestamp }, frames: [frame] })
+        setAiResult(result); setAiError(''); setLiveStatus('最新のAI解析を更新しました')
+      } catch (error) { setAiError(error instanceof Error ? error.message : 'ライブAI解析に失敗しました'); setLiveStatus('') }
+      finally { liveAnalysisBusy.current = false }
+    }
+    void analyzeFrame()
+    const timer = window.setInterval(analyzeFrame, 15_000)
+    return () => window.clearInterval(timer)
+  }, [recording, liveAiEnabled, team, perspective])
 
   function addMoment() {
     const item: Moment = { id: crypto.randomUUID(), time, perspective, rating, note: note.trim() || coachingAdvice(perspective, rating), createdAt: new Date().toISOString() }
@@ -71,6 +115,55 @@ export default function App() {
     const additions: Moment[] = aiResult.evidence.map(e => ({ id: crypto.randomUUID(), time: Math.min(duration, Math.max(0, e.timestamp)), perspective, rating: e.tag, note: e.description, createdAt: new Date().toISOString() }))
     setMoments(current => [...current, ...additions].sort((a,b) => a.time-b.time))
   }
+  async function startCamera() {
+    setAiError(''); setLiveStatus('カメラを起動中')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: true })
+      cameraStream.current?.getTracks().forEach(track => track.stop())
+      releasePreviewUrl(); cameraStream.current = stream; setSource(''); setRecordedBlob(null); setCameraActive(true); setLiveViewMode('live'); setLiveStatus('カメラ準備完了')
+      requestAnimationFrame(() => { if (liveVideo.current) { liveVideo.current.srcObject = stream; void liveVideo.current.play() } })
+    } catch (error) { setLiveStatus(''); setAiError(error instanceof Error ? `カメラを開始できません: ${error.message}` : 'カメラを開始できません') }
+  }
+  function startRecording() {
+    if (!cameraStream.current) return
+    setRecordingSeconds(0); setAiError(''); setLiveStatus('録画中')
+    try {
+      recordingSession.current = createRecorder(cameraStream.current, blob => {
+        const url = URL.createObjectURL(blob)
+        releasePreviewUrl(); setRecordedBlob(blob); setSource(url); setCameraActive(false); setRecording(false); setLiveViewMode('live'); setLiveStatus('録画完了・再生とAI解析ができます')
+        cameraStream.current?.getTracks().forEach(track => track.stop()); cameraStream.current = null
+        requestAnimationFrame(() => { if (liveVideo.current) liveVideo.current.srcObject = null })
+      })
+      recordingSession.current.recorder.start(1000); setRecording(true)
+    } catch (error) { setLiveStatus(''); setAiError(error instanceof Error ? `録画を開始できません: ${error.message}` : 'このブラウザでは録画できません') }
+  }
+  function stopRecording() { if (recordingSession.current?.recorder.state === 'recording') recordingSession.current.recorder.stop() }
+  function releasePreviewUrl() {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = ''; setPreviewUrl('')
+  }
+  async function showRecordingPreview(lastThirtySeconds = false) {
+    const session = recordingSession.current
+    if (!session || session.recorder.state !== 'recording') return
+    setLiveStatus('撮影内容を準備中')
+    try {
+      const blob = await session.requestRecordedBlob()
+      if (!blob.size || session.recorder.state !== 'recording') return
+      releasePreviewUrl()
+      const url = URL.createObjectURL(blob); previewUrlRef.current = url; setPreviewUrl(url)
+      setReplayLastThirty(lastThirtySeconds); setLiveViewMode('replay'); setLiveStatus('録画はバックグラウンドで継続中')
+    } catch (error) { setAiError(error instanceof Error ? `撮影内容を再生できません: ${error.message}` : '撮影内容を再生できません') }
+  }
+  function returnToLive() {
+    if (video.current) { video.current.pause(); video.current.removeAttribute('src'); video.current.load() }
+    releasePreviewUrl(); setLiveViewMode('live'); setLiveStatus('録画中')
+    requestAnimationFrame(() => { if (liveVideo.current && cameraStream.current) { liveVideo.current.srcObject = cameraStream.current; void liveVideo.current.play() } })
+  }
+  async function saveRecordedVideo() {
+    if (!recordedBlob) return
+    const method = await saveRecording(recordedBlob)
+    if (method !== 'cancelled') setLiveStatus(method === 'picker' ? '録画動画を保存しました' : '録画動画をダウンロードしました')
+  }
 
   return <div className="app">
     <header><div className="brand"><div className="ball">◉</div><div><strong>TACTICAL <i>ANALYZER</i></strong><small>BASKETBALL GAME INTELLIGENCE</small></div></div>
@@ -80,12 +173,13 @@ export default function App() {
 
     {view==='analyze' ? <main>
       <section className="video-panel panel">
-        <div className="video-top"><span className="live-dot">●</span><b> GAME FOOTAGE</b><span className="timecode">{formatTime(time)} / {formatTime(duration)}</span></div>
+        <div className="video-top"><span className="live-dot">●</span><b>{cameraActive ? liveViewMode==='replay' ? ' REPLAY' : ' LIVE CAMERA' : ' GAME FOOTAGE'}</b><span className="timecode">{recording ? `● REC ${formatTime(recordingSeconds)}` : `${formatTime(time)} / ${formatTime(duration)}`}</span></div>
         <div className="video-stage">
-          {source ? <video ref={video} src={source} controls onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} /> : <div className="empty-video"><div className="court"><span>＋</span></div><h2>試合映像を読み込む</h2><p>MP4・MOV・WebM / ファイルは端末内だけで処理されます</p><label>映像を選択<input type="file" accept="video/*" onChange={e=>{const f=e.target.files?.[0];if(f)setSource(URL.createObjectURL(f))}} /></label><button onClick={enableDemo}>サンプルで試す →</button></div>}
-          {demo && !source && <div className="demo-watermark">DEMO FOOTAGE</div>}
+          {cameraActive ? <><video ref={liveVideo} className={liveViewMode==='replay'?'live-capture-video':''} autoPlay muted playsInline />{liveViewMode==='replay'&&previewUrl&&<video ref={video} src={previewUrl} controls autoPlay playsInline onLoadedMetadata={e=>{e.currentTarget.currentTime=replayStartTime(e.currentTarget.duration,replayLastThirty)}}/>}</> : source ? <video ref={video} src={source} controls onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} /> : <div className="empty-video"><div className="court"><span>＋</span></div><h2>試合映像を読み込む</h2><p>MP4・MOV・WebM / ファイルは端末内だけで処理されます</p><div className="source-actions"><label>映像を選択<input type="file" accept="video/*" onChange={e=>{const f=e.target.files?.[0];if(f)setSource(URL.createObjectURL(f))}} /></label><button className="camera-button" onClick={startCamera}>LIVE CAMERA</button></div><button onClick={enableDemo}>サンプルで試す →</button></div>}
+          {demo && !source && !cameraActive && <div className="demo-watermark">DEMO FOOTAGE</div>}
         </div>
-        <div className="scrubber"><span>{formatTime(time)}</span><input aria-label="動画時刻" type="range" min="0" max={duration} value={time} onChange={e=>jump(+e.target.value)} /><span>{formatTime(duration)}</span></div>
+        {cameraActive ? liveViewMode==='replay' ? <div className="live-controls replay-controls"><button className="return-live" onClick={returnToLive}>← LIVEに戻る</button><button className="stop-recording" onClick={stopRecording}>■ 録画を停止</button><small>{liveStatus}</small></div> : <div className="live-controls"><button className={recording?'stop-recording':'start-recording'} onClick={recording?stopRecording:startRecording}>{recording?'■ 録画を停止':'● 録画を開始'}</button>{recording&&<><button className="preview-recording" onClick={()=>showRecordingPreview(false)}>▶ 撮影内容を再生</button><button className="preview-recording" onClick={()=>showRecordingPreview(true)}>↺ 直前30秒</button></>}<label className="ai-toggle"><input type="checkbox" checked={liveAiEnabled} onChange={e=>setLiveAiEnabled(e.target.checked)}/><span/> AI解析 {liveAiEnabled?'ON':'OFF'}</label><small>{liveStatus}</small></div> : <div className="scrubber"><span>{formatTime(time)}</span><input aria-label="動画時刻" type="range" min="0" max={duration} value={time} onChange={e=>jump(+e.target.value)} /><span>{formatTime(duration)}</span></div>}
+        {recordedBlob&&<div className="recording-actions"><span>録画動画</span><button onClick={saveRecordedVideo}>↓ 動画を保存</button><button onClick={startCamera}>↻ もう一度撮影</button></div>}
         <div className="team-select"><span>分析するチーム</span><button className={team==='濃色'?'selected dark':''} onClick={()=>setTeam('濃色')}><i/>濃色チーム</button><button className={team==='淡色'?'selected light':''} onClick={()=>setTeam('淡色')}><i/>淡色チーム</button></div>
       </section>
 
