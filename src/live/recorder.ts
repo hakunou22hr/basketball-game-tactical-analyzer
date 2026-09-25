@@ -12,17 +12,25 @@ export function createRecorder(
   stream: MediaStream,
   onComplete: (blob: Blob) => void,
   MediaRecorderClass: typeof MediaRecorder = MediaRecorder,
+  onChunk?: (chunk: Blob) => void,
 ) {
   const mimeType = getSupportedRecordingMimeType(MediaRecorderClass)
   const chunks: BlobPart[] = []
   const recorder = new MediaRecorderClass(stream, mimeType ? { mimeType } : undefined)
   recorder.addEventListener('dataavailable', event => {
-    if (event.data.size) chunks.push(event.data)
+    if (event.data.size) {
+      chunks.push(event.data)
+      onChunk?.(event.data)
+    }
   })
   recorder.addEventListener('stop', () => {
     onComplete(new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' }))
   }, { once: true })
   return recorder
+}
+
+export function createRecordingBlob(chunks: BlobPart[], mimeType = 'video/webm') {
+  return new Blob(chunks, { type: mimeType || 'video/webm' })
 }
 
 type SaveFilePicker = (options: {

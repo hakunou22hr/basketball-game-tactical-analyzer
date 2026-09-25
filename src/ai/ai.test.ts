@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { frameTimes, resolveRange } from './frameExtractor'
-import { requestAnalysis, validateAnalysis } from './client'
+import { getAnalysisConnection, requestAnalysis, validateAnalysis } from './client'
 
 const valid = { summary:'戦況', confidence:'low', offense:{working:[],problems:[],scoringSources:[],repeatPatterns:[]}, defense:{working:[],problems:[],keyOpponent:null,recommendations:[]}, nextThreePossessions:[], timeoutMessage:'短い指示', evidence:[{timestamp:10,tag:'AI FIX',description:'戻り',confidence:'low'}] }
 describe('AI video analysis', () => {
@@ -8,6 +8,19 @@ describe('AI video analysis', () => {
   it('samples no more than 14 frames at roughly five-second intervals', () => { const times=frameTimes(0,60); expect(times).toHaveLength(13); expect(times[1]).toBe(5) })
   it('validates response including low confidence and timeline evidence', () => expect(validateAnalysis(valid).evidence[0].tag).toBe('AI FIX'))
   it('rejects malformed JSON', () => expect(()=>validateAnalysis({...valid,confidence:'certain'})).toThrow('形式が不正'))
-  it('does not pretend to analyze without an endpoint', async () => { await expect(requestAnalysis({team:'濃色',perspective:'全体',range:{start:0,end:1},frames:[]},'')).rejects.toThrow('まだ設定') })
+  it('does not pretend to analyze without an endpoint', async () => { await expect(requestAnalysis({team:'濃色',perspective:'全体',range:{start:0,end:1},frames:[]},'')).rejects.toThrow('VITE_AI_ANALYSIS_ENDPOINT') })
+  it('reports whether the AI proxy endpoint is configured', () => { expect(getAnalysisConnection('')).toEqual({connected:false,label:'AI未設定'}); expect(getAnalysisConnection('/api')).toEqual({connected:true,label:'AI接続済み'}) })
+  it('returns a validated game plan from the configured proxy', async () => {
+    const fetch = vi.fn().mockResolvedValue({ok:true,json:async()=>valid})
+    vi.stubGlobal('fetch', fetch)
+    await expect(requestAnalysis({team:'濃色',perspective:'全体',range:{start:0,end:1},frames:[]},'/api')).resolves.toMatchObject({summary:'戦況'})
+    expect(fetch).toHaveBeenCalledWith('/api', expect.objectContaining({method:'POST',signal:expect.any(AbortSignal)}))
+    vi.unstubAllGlobals()
+  })
+  it('reports a timeout without affecting media features', async () => {
+    vi.stubGlobal('fetch',vi.fn().mockRejectedValue(new DOMException('timed out','TimeoutError')))
+    await expect(requestAnalysis({team:'濃色',perspective:'全体',range:{start:0,end:1},frames:[]},'/api')).rejects.toThrow('録画はそのまま継続')
+    vi.unstubAllGlobals()
+  })
   it('reports API errors', async () => { vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,status:500})); await expect(requestAnalysis({team:'淡色',perspective:'全体',range:{start:0,end:1},frames:[]},'/api')).rejects.toThrow('(500)'); vi.unstubAllGlobals() })
 })

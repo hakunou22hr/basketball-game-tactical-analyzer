@@ -10,9 +10,18 @@ export function validateAnalysis(value: unknown): AiAnalysis {
   return v
 }
 export function getAnalysisEndpoint() { return import.meta.env.VITE_AI_ANALYSIS_ENDPOINT?.trim() || '' }
+export function getAnalysisConnection(endpoint = getAnalysisEndpoint()) {
+  return endpoint ? { connected: true, label: 'AI接続済み' } : { connected: false, label: 'AI未設定' }
+}
 export async function requestAnalysis(request: AnalysisRequest, endpoint = getAnalysisEndpoint()) {
-  if (!endpoint) throw new Error('AI解析サーバーがまだ設定されていません')
-  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, instructions: buildAnalysisInstructions(request) }) })
+  if (!endpoint) throw new Error('AI解析サーバーが設定されていません。VITE_AI_ANALYSIS_ENDPOINT の設定が必要です')
+  let response: Response
+  try {
+    response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, instructions: buildAnalysisInstructions(request) }), signal: AbortSignal.timeout(30_000) })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') throw new Error('AI解析がタイムアウトしました。録画はそのまま継続しています')
+    throw error
+  }
   if (!response.ok) throw new Error(`AI解析サーバーでエラーが発生しました (${response.status})`)
   return validateAnalysis(await response.json())
 }

@@ -23,7 +23,12 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run test
-      - run: npm run build
+      - name: Build
+        run: npm run build
+        env:
+          # Set this repository variable to the URL of a trusted proxy API.
+          # API keys must remain on that server and must never use a VITE_ variable.
+          VITE_AI_ANALYSIS_ENDPOINT: ${{ vars.VITE_AI_ANALYSIS_ENDPOINT }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
