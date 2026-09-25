@@ -21,6 +21,8 @@ const demoMoments: Moment[] = [
   {id:'d2',time:43,perspective:'ディフェンス',rating:'CHECK',note:'ピック＆ロールのカバレッジを確認',createdAt:new Date().toISOString()},
   {id:'d3',time:67,perspective:'トランジション',rating:'FIX',note:'ターンオーバー後の戻りが遅い',createdAt:new Date().toISOString()}
 ]
+const rangeLabel = (range: AnalysisRange) => ({ current: '現在の瞬間', last15: '直近15秒', last30: '直近30秒' })[range]
+const connectionLabel = { unset: '未設定', ready: '接続設定済み', connected: '接続済み', error: '接続エラー' } as const
 
 export default function App() {
   const video = useRef<HTMLVideoElement>(null)
@@ -30,6 +32,7 @@ export default function App() {
   const recordingChunks = useRef<Blob[]>([])
   const replayChunkReady = useRef<(() => void) | null>(null)
   const liveAnalysisBusy = useRef(false)
+  const liveFrames = useRef<ReturnType<typeof captureLiveFrame>[]>([])
   const [source, setSource] = useState('')
   const [team, setTeam] = useState<'濃色'|'淡色'>('濃色')
   const [perspective, setPerspective] = useState<Perspective>('全体')
@@ -41,8 +44,7 @@ export default function App() {
   const [demo, setDemo] = useState(false)
   const [view, setView] = useState<'analyze'|'review'>('analyze')
   const [saved, setSaved] = useState<Game[]>([])
-  const [analysisRange, setAnalysisRange] = useState<AnalysisRange>('last60')
-  const [selection, setSelection] = useState({ start: 0, end: 60 })
+  const [analysisRange, setAnalysisRange] = useState<AnalysisRange>('current')
   const [aiResult, setAiResult] = useState<AiAnalysis | null>(null)
   const [aiError, setAiError] = useState('')
   const [progress, setProgress] = useState('')
@@ -54,6 +56,8 @@ export default function App() {
   const [replayUrl, setReplayUrl] = useState('')
   const [liveAiEnabled, setLiveAiEnabled] = useState(true)
   const [liveStatus, setLiveStatus] = useState('')
+  const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'error'>(getAnalysisEndpoint() ? 'ready' : 'unset')
+  const [analysisMeta, setAnalysisMeta] = useState<{ target: string; range: string; at: string } | null>(null)
   const stats = useMemo(() => summarize(moments), [moments])
   const game = (): Game => ({ id: 'current-game', title: 'ゲーム分析', team, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), moments })
   useEffect(() => { loadGames().then(setSaved).catch(() => {}) }, [])
@@ -68,23 +72,23 @@ export default function App() {
   useEffect(() => () => cameraStream.current?.getTracks().forEach(track => track.stop()), [])
 
   useEffect(() => {
-    if (!recording || !liveAiEnabled) return
-    const analyzeFrame = async () => {
-      if (!liveVideo.current || liveAnalysisBusy.current) return
-      if (!getAnalysisEndpoint()) { setAiError('AI解析サーバーがまだ設定されていません'); return }
-      liveAnalysisBusy.current = true
-      setLiveStatus('ライブ映像をAI解析中')
+    if (!recording) { liveFrames.current = []; return }
+    liveFrames.current = []
+    const captureFrame = () => {
+      if (!liveVideo.current) return
       try {
         const frame = captureLiveFrame(liveVideo.current, team, perspective)
-        const result = await requestAnalysis({ team, perspective, range: { start: frame.timestamp, end: frame.timestamp }, frames: [frame] })
-        setAiResult(result); setAiError(''); setLiveStatus('最新のAI解析を更新しました')
-      } catch (error) { setAiError(error instanceof Error ? error.message : 'ライブAI解析に失敗しました'); setLiveStatus('') }
-      finally { liveAnalysisBusy.current = false }
+        liveFrames.current = [...liveFrames.current, frame].filter(item => frame.timestamp - item.timestamp <= 30)
+      } catch { /* The camera may still be warming up. */ }
     }
-    void analyzeFrame()
-    const timer = window.setInterval(analyzeFrame, 15_000)
-    return () => window.clearInterval(timer)
-  }, [recording, liveAiEnabled, team, perspective])
+    const analyzeFrame = async () => {
+      if (liveAiEnabled) await analyzeLiveRecording()
+    }
+    captureFrame(); if (liveAiEnabled) void analyzeFrame()
+    const captureTimer = window.setInterval(captureFrame, 5_000)
+    const analysisTimer = window.setInterval(analyzeFrame, 15_000)
+    return () => { window.clearInterval(captureTimer); window.clearInterval(analysisTimer) }
+  }, [recording, liveAiEnabled, team, perspective, analysisRange])
 
   function addMoment() {
     const item: Moment = { id: crypto.randomUUID(), time, perspective, rating, note: note.trim() || coachingAdvice(perspective, rating), createdAt: new Date().toISOString() }
@@ -99,14 +103,33 @@ export default function App() {
     if (!getAnalysisEndpoint()) { setAiError('AI解析サーバーがまだ設定されていません'); return }
     if (!video.current || !source) { setAiError('解析する試合映像を読み込んでください'); return }
     try {
-      const range = resolveRange(analysisRange, time, duration, selection)
-      setProgress('フレーム抽出中'); const frames = await extractFrames(video.current, range, team, perspective)
+      const range = resolveRange(analysisRange, time, duration)
+      setProgress('フレーム抽出中'); const frames = analysisRange === 'current'
+        ? [captureLiveFrame(video.current, team, perspective)]
+        : await extractFrames(video.current, range, team, perspective)
       setProgress('攻撃解析中'); await new Promise(resolve => setTimeout(resolve, 200))
       setProgress('守備解析中'); const resultPromise = requestAnalysis({ team, perspective, range, frames })
       await new Promise(resolve => setTimeout(resolve, 200)); setProgress('ゲームプラン生成中')
-      setAiResult(await resultPromise)
-    } catch (error) { setAiError(error instanceof Error ? error.message : 'AI解析に失敗しました') }
+      setAiResult(await resultPromise); setAiConnection('connected')
+      setAnalysisMeta({ target: `${team}チーム・${perspective}`, range: rangeLabel(analysisRange), at: new Date().toLocaleTimeString('ja-JP') })
+    } catch (error) { setAiConnection('error'); setAiError(error instanceof Error ? error.message : 'AI解析に失敗しました') }
     finally { setProgress('') }
+  }
+  async function analyzeLiveRecording() {
+    if (!liveVideo.current || liveAnalysisBusy.current) return
+    if (!getAnalysisEndpoint()) { setAiConnection('unset'); setAiError('AI解析サーバーがまだ設定されていません'); return }
+    liveAnalysisBusy.current = true; setProgress('録画映像をAI解析中'); setLiveStatus('録画映像をAI解析中')
+    try {
+      const latest = captureLiveFrame(liveVideo.current, team, perspective)
+      liveFrames.current = [...liveFrames.current, latest].filter(item => latest.timestamp - item.timestamp <= 30)
+      const seconds = analysisRange === 'current' ? 0 : analysisRange === 'last15' ? 15 : 30
+      const frames = seconds ? liveFrames.current.filter(item => latest.timestamp - item.timestamp <= seconds) : [latest]
+      const range = { start: frames[0]?.timestamp ?? latest.timestamp, end: latest.timestamp }
+      setAiResult(await requestAnalysis({ team, perspective, range, frames })); setAiError(''); setAiConnection('connected')
+      setAnalysisMeta({ target: `${team}チーム・${perspective}`, range: rangeLabel(analysisRange), at: new Date().toLocaleTimeString('ja-JP') })
+      setLiveStatus('最新のAI解析を更新しました')
+    } catch (error) { setAiConnection('error'); setAiError(error instanceof Error ? error.message : 'ライブAI解析に失敗しました'); setLiveStatus('') }
+    finally { liveAnalysisBusy.current = false; setProgress('') }
   }
   function addAiEvidence() {
     if (!aiResult) return
@@ -124,7 +147,7 @@ export default function App() {
   }
   function startRecording() {
     if (!cameraStream.current) return
-    setRecordingSeconds(0); recordingChunks.current = []; setReplayUrl(''); setAiError(''); setLiveStatus('録画中')
+    setRecordingSeconds(0); recordingChunks.current = []; liveFrames.current = []; setReplayUrl(''); setAiError(''); setLiveStatus('録画中')
     try {
       mediaRecorder.current = createRecorder(cameraStream.current, blob => {
         const url = URL.createObjectURL(blob)
@@ -171,7 +194,7 @@ export default function App() {
           {cameraActive ? <><video ref={liveVideo} className={replayUrl?'live-feed-hidden':''} autoPlay muted playsInline />{replayUrl&&<video className="replay-video" src={replayUrl} controls autoPlay playsInline onLoadedMetadata={e=>{const end=Number.isFinite(e.currentTarget.duration)?e.currentTarget.duration:recordingSeconds;e.currentTarget.currentTime=Math.max(0,end-30);void e.currentTarget.play()}}/>}</> : source ? <video ref={video} src={source} controls onTimeUpdate={e=>setTime(e.currentTarget.currentTime)} onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} /> : <div className="empty-video"><div className="court"><span>＋</span></div><h2>試合映像を読み込む</h2><p>MP4・MOV・WebM / ファイルは端末内だけで処理されます</p><div className="source-actions"><label>映像を選択<input type="file" accept="video/*" onChange={e=>{const f=e.target.files?.[0];if(f)setSource(URL.createObjectURL(f))}} /></label><button className="camera-button" onClick={startCamera}>LIVE CAMERA</button></div><button onClick={enableDemo}>サンプルで試す →</button></div>}
           {demo && !source && !cameraActive && <div className="demo-watermark">DEMO FOOTAGE</div>}
         </div>
-        {cameraActive ? <div className="live-controls"><button className={recording?'stop-recording':'start-recording'} onClick={recording?stopRecording:startRecording}>{recording?'■ 録画を停止':'● 録画を開始'}</button>{recording&&<button className="replay-button" onClick={replayUrl?returnToLive:showReplay}>{replayUrl?'● LIVEに戻る':'↶ 撮影内容を再生（直前30秒）'}</button>}<label className="ai-toggle"><input type="checkbox" checked={liveAiEnabled} onChange={e=>setLiveAiEnabled(e.target.checked)}/><span/> AI解析 {liveAiEnabled?'ON':'OFF'}</label><small>{liveStatus}</small></div> : <div className="scrubber"><span>{formatTime(time)}</span><input aria-label="動画時刻" type="range" min="0" max={duration} value={time} onChange={e=>jump(+e.target.value)} /><span>{formatTime(duration)}</span></div>}
+        {cameraActive ? <div className="live-controls"><button className={recording?'stop-recording':'start-recording'} onClick={recording?stopRecording:startRecording}>{recording?'■ 録画を停止':'● 録画を開始'}</button>{recording&&<button className="replay-button" onClick={replayUrl?returnToLive:showReplay}>{replayUrl?'● LIVEに戻る':'↶ 撮影内容を再生（直前30秒）'}</button>}<label className="ai-toggle"><input type="checkbox" checked={liveAiEnabled} onChange={e=>setLiveAiEnabled(e.target.checked)}/><span/> 自動解析 {liveAiEnabled?'ON':'OFF'}</label><small>{liveStatus}</small></div> : <div className="scrubber"><span>{formatTime(time)}</span><input aria-label="動画時刻" type="range" min="0" max={duration} value={time} onChange={e=>jump(+e.target.value)} /><span>{formatTime(duration)}</span></div>}
         {recordedBlob&&<div className="recording-actions"><span>録画動画</span><button onClick={saveRecordedVideo}>↓ 動画を保存</button><button onClick={startCamera}>↻ もう一度撮影</button></div>}
         <div className="team-select"><span>分析するチーム</span><button className={team==='濃色'?'selected dark':''} onClick={()=>setTeam('濃色')}><i/>濃色チーム</button><button className={team==='淡色'?'selected light':''} onClick={()=>setTeam('淡色')}><i/>淡色チーム</button></div>
       </section>
@@ -190,10 +213,11 @@ export default function App() {
       </section>
 
       <section className="ai-panel panel">
-        <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span>動画全体ではなく抽出フレームのみ送信</span></div>
-        <div className="range-options">{([['last30','直近30秒'],['last60','直近60秒'],['selection','選択区間'],['all','動画全体']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
-        {analysisRange==='selection'&&<div className="selection-fields"><label>開始（秒）<input type="number" min="0" max={duration} value={selection.start} onChange={e=>setSelection(v=>({...v,start:+e.target.value}))}/></label><label>終了（秒）<input type="number" min="0" max={duration} value={selection.end} onChange={e=>setSelection(v=>({...v,end:+e.target.value}))}/></label></div>}
-        <button className="analyze-button" disabled={!!progress} onClick={analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
+        <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span className={`connection ${aiConnection}`}>● AI接続: {connectionLabel[aiConnection]}</span></div>
+        <p className="privacy-note">動画全体ではなく抽出フレームのみ送信・応答待ちは最大30秒</p>
+        <div className="range-options">{([['current','現在の瞬間'],['last15','直近15秒'],['last30','直近30秒']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
+        <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
+        {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span><span>範囲 <b>{analysisMeta.range}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}
         {progress&&<div className="progress" aria-live="polite">{['フレーム抽出中','攻撃解析中','守備解析中','ゲームプラン生成中'].map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
         {aiError&&<div className="ai-error" role="alert">{aiError}<small>手動タグと簡易ルールアドバイスは引き続き利用できます。</small></div>}
       </section>

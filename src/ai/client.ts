@@ -10,9 +10,18 @@ export function validateAnalysis(value: unknown): AiAnalysis {
   return v
 }
 export function getAnalysisEndpoint() { return import.meta.env.VITE_AI_ANALYSIS_ENDPOINT?.trim() || '' }
-export async function requestAnalysis(request: AnalysisRequest, endpoint = getAnalysisEndpoint()) {
+export async function requestAnalysis(request: AnalysisRequest, endpoint = getAnalysisEndpoint(), timeoutMs = 30_000) {
   if (!endpoint) throw new Error('AI解析サーバーがまだ設定されていません')
-  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, instructions: buildAnalysisInstructions(request) }) })
-  if (!response.ok) throw new Error(`AI解析サーバーでエラーが発生しました (${response.status})`)
-  return validateAnalysis(await response.json())
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, instructions: buildAnalysisInstructions(request) }), signal: controller.signal })
+    if (!response.ok) throw new Error(`AI解析サーバーでエラーが発生しました (${response.status})`)
+    return validateAnalysis(await response.json())
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('AI解析が30秒以内に完了しませんでした')
+    throw error
+  } finally {
+    globalThis.clearTimeout(timeout)
+  }
 }

@@ -1,9 +1,9 @@
 import type { AnalysisRange, ExtractedFrame, TeamColor } from './types'
 import type { Perspective } from '../types'
 export function resolveRange(kind: AnalysisRange, current: number, duration: number, selection?: { start: number; end: number }) {
-  if (kind === 'all') return { start: 0, end: duration }
-  if (kind === 'selection' && selection) return { start: Math.max(0, Math.min(selection.start, selection.end)), end: Math.min(duration, Math.max(selection.start, selection.end)) }
-  const seconds = kind === 'last30' ? 30 : 60
+  void selection
+  if (kind === 'current') return { start: Math.min(current, duration), end: Math.min(current, duration) }
+  const seconds = kind === 'last15' ? 15 : 30
   return { start: Math.max(0, current - seconds), end: Math.min(current, duration) }
 }
 export function frameTimes(start: number, end: number, maximum = 14) {
