@@ -22,3 +22,7 @@ export function createLatestOnlyQueue<T>(worker: (value: T) => Promise<void>) {
   }
   return { push(value: T) { if (running) queued = value; else void drain(value) }, isRunning: () => running }
 }
+
+export function shouldCaptureFrame(elapsedSeconds: number, lastCaptureSeconds: number, intervalSeconds = 5) {
+  return elapsedSeconds > 0 && elapsedSeconds % intervalSeconds === 0 && elapsedSeconds !== lastCaptureSeconds
+}

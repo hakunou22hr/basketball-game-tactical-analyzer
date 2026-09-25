@@ -6,7 +6,7 @@ import type { Game, Moment, Perspective, Rating } from './types'
 import { extractFrames, resolveRange } from './ai/frameExtractor'
 import { getAnalysisEndpoint, requestAnalysis } from './ai/client'
 import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
-import { captureLiveFrame, createLatestOnlyQueue } from './live/liveFrameCapture'
+import { captureLiveFrame, createLatestOnlyQueue, shouldCaptureFrame } from './live/liveFrameCapture'
 import { createRecording, recordingFilename, requestCamera, saveRecording, stopCamera, type RecordingState } from './live/recorder'
 
 const perspectives: { name: Perspective; icon: string }[] = [
@@ -54,6 +54,7 @@ export default function App() {
   const [liveAnalysisEnabled, setLiveAnalysisEnabled] = useState(true)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [latestAnalysisTime, setLatestAnalysisTime] = useState<number | null>(null)
+  const [recordingMessage, setRecordingMessage] = useState('')
   const liveQueue = useRef(createLatestOnlyQueue(async (frames: ReturnType<typeof captureLiveFrame>[]) => {
     try {
       const result = await requestAnalysis({ team: frames[0].team, perspective: frames[0].perspective, range: { start: frames[0].timestamp, end: frames.at(-1)!.timestamp }, frames })
@@ -64,7 +65,7 @@ export default function App() {
   const game = (): Game => ({ id: 'current-game', title: 'ゲーム分析', team, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), moments })
   useEffect(() => { loadGames().then(setSaved).catch(() => {}) }, [])
   useEffect(() => () => { if (source) URL.revokeObjectURL(source) }, [source])
-  useEffect(() => { liveEnabledRef.current = liveAnalysisEnabled }, [liveAnalysisEnabled])
+  useEffect(() => { liveEnabledRef.current = liveAnalysisEnabled; if (!liveAnalysisEnabled) liveFrames.current=[] }, [liveAnalysisEnabled])
   useEffect(() => { if (cameraStream && video.current) { video.current.srcObject=cameraStream; void video.current.play() } }, [cameraStream])
   useEffect(() => () => { stopCamera(cameraStream); if (liveTimer.current) window.clearInterval(liveTimer.current) }, [cameraStream])
 
@@ -77,12 +78,15 @@ export default function App() {
   }
   function startRecording() {
     if (!cameraStream) return
-    const mediaRecorder = createRecording(cameraStream, blob => { setRecordedBlob(blob); setRecordingState('stopped'); const url=URL.createObjectURL(blob); setSource(url); setTimeout(()=>{ if(video.current){video.current.srcObject=null;video.current.src=url;video.current.load()} }) })
-    recorder.current=mediaRecorder; recordingStartedAt.current=Date.now(); setRecordingSeconds(0); setRecordingState('recording'); liveFrames.current=[]; lastLiveCapture.current=0; mediaRecorder.start(1000)
+    try {
+      const mediaRecorder = createRecording(cameraStream, blob => { setRecordedBlob(blob); setRecordingState('stopped'); setRecordingMessage(blob.size ? '録画を保存できます' : '録画データが空です'); const url=URL.createObjectURL(blob); setSource(url); setTimeout(()=>{ if(video.current){video.current.srcObject=null;video.current.src=url;video.current.load()} }) })
+      mediaRecorder.addEventListener('error', event => setRecordingMessage(`録画エラー: ${(event as ErrorEvent).message || '録画を継続できません'}`))
+      recorder.current=mediaRecorder; recordingStartedAt.current=Date.now(); setRecordingSeconds(0); setRecordingState('recording'); setRecordingMessage(''); liveFrames.current=[]; lastLiveCapture.current=0; mediaRecorder.start(1000)
+    } catch (error) { setRecordingMessage(error instanceof Error ? `録画を開始できません: ${error.message}` : '録画を開始できません'); return }
     if (liveEnabledRef.current && video.current) { try { liveFrames.current.push(captureLiveFrame(video.current,0,team,perspective)) } catch { /* recording does not depend on analysis */ } }
     liveTimer.current=window.setInterval(()=>{
       const elapsed=Math.floor((Date.now()-recordingStartedAt.current)/1000); setRecordingSeconds(elapsed)
-      if (liveEnabledRef.current && video.current && elapsed>0 && elapsed%5===0 && elapsed!==lastLiveCapture.current) {
+      if (liveEnabledRef.current && video.current && shouldCaptureFrame(elapsed,lastLiveCapture.current)) {
         lastLiveCapture.current=elapsed
         try { liveFrames.current.push(captureLiveFrame(video.current,elapsed,team,perspective)); if(liveFrames.current.length>=4){liveQueue.current.push(liveFrames.current.splice(0))} } catch { /* camera may still be warming up; recording remains independent */ }
       }
@@ -90,7 +94,7 @@ export default function App() {
   }
   function stopRecording() { if (liveTimer.current) window.clearInterval(liveTimer.current); liveTimer.current=null; recorder.current?.stop(); recorder.current=null; stopCamera(cameraStream); setCameraStream(null) }
   function switchFootageMode(mode:'file'|'live') { if(recordingState==='recording') return; stopCamera(cameraStream); setCameraStream(null); setFootageMode(mode) }
-  async function saveRecordedVideo() { if(recordedBlob) await saveRecording(recordedBlob,recordingFilename(new Date(),recordedBlob.type)) }
+  async function saveRecordedVideo() { if(recordedBlob) { try { const method=await saveRecording(recordedBlob,recordingFilename(new Date(),recordedBlob.type)); setRecordingMessage(method==='picker'?'指定した場所に保存しました':'ダウンロードを開始しました') } catch(error) { if(!(error instanceof DOMException&&error.name==='AbortError'))setRecordingMessage('動画を保存できません') } } }
   function newRecording() { if(source) URL.revokeObjectURL(source); setSource(''); setRecordedBlob(null); setRecordingState('idle'); setRecordingSeconds(0); setLatestAnalysisTime(null); void startCamera() }
 
   function addMoment() {
@@ -102,7 +106,7 @@ export default function App() {
   async function persist() { const g = game(); await saveGame(g); setSaved(await loadGames()) }
   function exportAs(kind: 'json'|'csv'|'html'|'pdf') { const g=game(); if(kind==='pdf'){ const w=window.open(); if(w){w.document.write(toHtml(g));w.document.close();w.print()} return } const data=kind==='json'?JSON.stringify(g,null,2):kind==='csv'?toCsv(g):toHtml(g); download(data, kind==='json'?'application/json':kind==='csv'?'text/csv':'text/html',`game-review.${kind}`) }
   async function analyzeVideo() {
-    setAiError(''); setAiResult(null); setShowTimeout(false)
+    setAiError(''); setAiResult(null); setLatestAnalysisTime(null); setShowTimeout(false)
     if (!getAnalysisEndpoint()) { setAiError('AI解析サーバーがまだ設定されていません'); return }
     if (!video.current || !source) { setAiError('解析する試合映像を読み込んでください'); return }
     try {
@@ -138,6 +142,7 @@ export default function App() {
         </div>
         {footageMode==='live'&&<div className="live-controls"><button className="ai-toggle" onClick={()=>setLiveAnalysisEnabled(v=>!v)}>AI解析：{liveAnalysisEnabled?'ON':'OFF'}</button>{cameraStream&&recordingState!=='recording'&&<button className="record-start" onClick={startRecording}>● 録画開始</button>}{recordingState==='recording'&&<button className="record-stop" onClick={stopRecording}>■ 録画停止</button>}{latestAnalysisTime!==null&&<span>最新解析：{formatTime(latestAnalysisTime)}</span>}</div>}
         {footageMode==='live'&&recordedBlob&&<div className="recorded-actions"><button onClick={()=>void video.current?.play()}>▶ 録画を確認</button><button onClick={analyzeVideo}>AI解析する</button><button onClick={saveRecordedVideo}>動画を保存</button><button onClick={newRecording}>新しく撮影</button></div>}
+        {footageMode==='live'&&recordingMessage&&<div className="recording-message" role="status">{recordingMessage}</div>}
         <div className="scrubber"><span>{formatTime(time)}</span><input aria-label="動画時刻" type="range" min="0" max={duration} value={time} onChange={e=>jump(+e.target.value)} /><span>{formatTime(duration)}</span></div>
         <div className="team-select"><span>分析するチーム</span><button className={team==='濃色'?'selected dark':''} onClick={()=>setTeam('濃色')}><i/>濃色チーム</button><button className={team==='淡色'?'selected light':''} onClick={()=>setTeam('淡色')}><i/>淡色チーム</button></div>
       </section>
@@ -164,7 +169,7 @@ export default function App() {
         {aiError&&<div className="ai-error" role="alert">{aiError}<small>手動タグと簡易ルールアドバイスは引き続き利用できます。</small></div>}
       </section>
 
-      {aiResult&&<GamePlan result={aiResult} showTimeout={showTimeout} onTimeout={()=>setShowTimeout(v=>!v)} onAddTimeline={addAiEvidence}/>}
+      {aiResult&&<GamePlan result={aiResult} analysisTime={latestAnalysisTime} showTimeout={showTimeout} onTimeout={()=>setShowTimeout(v=>!v)} onAddTimeline={addAiEvidence}/>}
 
       <aside className={`coach ${rating==='GOOD PLAY'?'good':rating.toLowerCase()}`}><div className="coach-label">⚡ 簡易ルールアドバイス</div><div className="coach-body"><span className="quote">“</span><p>{coachingAdvice(perspective,rating)}</p><div><b>{perspective}</b><span>{rating}</span></div></div></aside>
     </main> : <Review moments={moments} stats={stats} saved={saved} onJump={s=>{setView('analyze');setTimeout(()=>jump(s))}} onExport={exportAs} />}
@@ -174,8 +179,8 @@ export default function App() {
 
 const confidenceLabel: Record<Confidence,string> = { high:'高', medium:'中', low:'低', unknown:'判断困難' }
 function Items({items}:{items:AnalysisItem[]}) { return items.length?<ul>{items.slice(0,3).map((item,i)=><li key={i}><span>{item.text}</span><em className={`confidence ${item.confidence}`}>{confidenceLabel[item.confidence]}</em></li>)}</ul>:<p className="unknown">判断困難</p> }
-function GamePlan({result,showTimeout,onTimeout,onAddTimeline}:{result:AiAnalysis;showTimeout:boolean;onTimeout:()=>void;onAddTimeline:()=>void}) {
-  return <section className="game-plan panel"><div className="plan-head"><div><small>AI VIDEO ANALYSIS</small><h2>AI GAME PLAN</h2></div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
+function GamePlan({result,analysisTime,showTimeout,onTimeout,onAddTimeline}:{result:AiAnalysis;analysisTime:number|null;showTimeout:boolean;onTimeout:()=>void;onAddTimeline:()=>void}) {
+  return <section className="game-plan panel"><div className="plan-head"><div><small>AI VIDEO ANALYSIS{analysisTime!==null&&` · 解析時刻 ${formatTime(analysisTime)}`}</small><h2>AI GAME PLAN</h2></div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
     <div className="plan-grid"><article><b>① 現在の戦況</b><p>{result.summary}</p></article><article><b>② 今うまくいっていること</b><Items items={[...result.offense.working,...result.defense.working].slice(0,3)}/></article><article><b>③ 最優先で直すこと</b><Items items={[...result.offense.problems,...result.defense.problems].slice(0,3)}/></article><article><b>④ 次の3ポゼッション</b><Items items={result.nextThreePossessions}/></article><article><b>⑤ 相手への対策</b><Items items={result.defense.keyOpponent?[result.defense.keyOpponent,...result.defense.recommendations].slice(0,3):result.defense.recommendations}/></article><article><b>⑥ 継続する攻撃</b><Items items={result.offense.repeatPatterns}/></article></div>
     <div className="plan-actions"><button className="timeout-button" onClick={onTimeout}>30秒で選手に伝える</button><button onClick={onAddTimeline}>AI重要場面をタイムラインへ追加</button></div>{showTimeout&&<div className="timeout-message"><b>TIMEOUT MESSAGE</b><p>{result.timeoutMessage}</p></div>}
   </section>

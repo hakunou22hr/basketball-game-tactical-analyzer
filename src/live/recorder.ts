@@ -1,8 +1,15 @@
 export type RecordingState = 'idle' | 'recording' | 'stopped'
 export const cameraConstraints: MediaStreamConstraints = { video: { facingMode: { ideal: 'environment' } }, audio: true }
-export function requestCamera(mediaDevices: Pick<MediaDevices, 'getUserMedia'> = navigator.mediaDevices) { return mediaDevices.getUserMedia(cameraConstraints) }
+export async function requestCamera(mediaDevices: Pick<MediaDevices, 'getUserMedia'> = navigator.mediaDevices) {
+  try { return await mediaDevices.getUserMedia(cameraConstraints) }
+  catch (error) {
+    // A device without a microphone must still be usable for game footage.
+    if (error instanceof DOMException && ['NotFoundError', 'OverconstrainedError'].includes(error.name)) return mediaDevices.getUserMedia({ ...cameraConstraints, audio: false })
+    throw error
+  }
+}
 
-export const recorderMimeTypes = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+export const recorderMimeTypes = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/webm', 'video/mp4']
 export function selectRecorderMimeType(MediaRecorderClass: typeof MediaRecorder = MediaRecorder) {
   return recorderMimeTypes.find(type => MediaRecorderClass.isTypeSupported(type)) || ''
 }
