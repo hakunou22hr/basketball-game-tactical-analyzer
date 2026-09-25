@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { captureLiveFrame } from './liveFrameCapture'
-import { createRecorder, getSupportedRecordingMimeType, saveRecording } from './recorder'
+import { createRecorder, createRecordingBlob, getSupportedRecordingMimeType, saveRecording } from './recorder'
 
 describe('live camera recording', () => {
   it('selects the first recording format supported by the browser', () => {
@@ -24,6 +24,21 @@ describe('live camera recording', () => {
     expect(complete).toHaveBeenCalledOnce()
     expect(complete.mock.calls[0][0]).toBeInstanceOf(Blob)
     expect(complete.mock.calls[0][0].size).toBe(5)
+  })
+
+  it('exposes chunks for replay without stopping the recorder', () => {
+    class Recorder extends EventTarget {
+      static isTypeSupported = () => true
+      mimeType = 'video/webm'; state: RecordingState = 'recording'
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) { super() }
+    }
+    const onChunk = vi.fn()
+    const recorder = createRecorder({} as MediaStream, vi.fn(), Recorder as unknown as typeof MediaRecorder, onChunk)
+    const event = new Event('dataavailable')
+    Object.defineProperty(event, 'data', { value: new Blob(['live']) })
+    recorder.dispatchEvent(event)
+    expect(onChunk).toHaveBeenCalledOnce()
+    expect(createRecordingBlob([onChunk.mock.calls[0][0]])).toHaveProperty('size', 4)
   })
 
   it('captures and scales a camera frame without seeking', () => {
