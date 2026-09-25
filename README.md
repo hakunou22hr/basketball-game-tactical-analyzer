@@ -21,3 +21,19 @@ npm run dev
 - Service Workerによるオフライン利用
 
 GitHub Pages: <https://hakunou22hr.github.io/basketball-game-tactical-analyzer/>
+
+## AI VIDEO ANALYSIS
+
+AI戦況解析はブラウザ内で動画から必要なJPEGフレームだけを抽出し、中継APIに送信します。動画ファイル全体は送信しません。
+
+```bash
+VITE_AI_ANALYSIS_ENDPOINT=https://your-secure-relay.example/analyze npm run dev
+```
+
+APIキーはフロントエンドに設定せず、中継API側で安全に管理してください。エンドポイント未設定時はAI解析を行わず、手動タグと簡易ルールアドバイスのみ動作します。
+
+## LIVE CAMERA / 録画
+
+`LIVE CAMERA・リアル撮影` は `getUserMedia()` で背面カメラを優先し、`MediaRecorder` でローカル録画します。AI解析ON時は5秒ごとに現在フレームを抽出し、4フレームずつ中継APIへ送信します。AI解析と録画は独立しており、AIの遅延やエラーで録画が停止することはありません。
+
+録画停止後はブラウザ内のBlobを再生・詳細AI解析できます。保存時は対応ブラウザで `showSaveFilePicker()` を使用し、非対応環境では通常のブラウザダウンロードに切り替えます。
