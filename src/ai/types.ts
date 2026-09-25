@@ -1,5 +1,5 @@
 import type { Perspective } from '../types'
-export type AnalysisRange = 'last30' | 'last60' | 'selection' | 'all'
+export type AnalysisRange = 'current' | 'last15' | 'last30'
 export type Confidence = 'high' | 'medium' | 'low' | 'unknown'
 export type TeamColor = '濃色' | '淡色'
 export interface ExtractedFrame { timestamp: number; image: string; team: TeamColor; perspective: Perspective }
