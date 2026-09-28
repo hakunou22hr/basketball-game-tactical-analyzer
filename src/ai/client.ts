@@ -21,7 +21,7 @@ function unwrapAnalysis(value: unknown): unknown {
   const content = wrapped.choices?.[0]?.message?.content
   return content === undefined ? value : unwrapAnalysis(content)
 }
-export function getAnalysisEndpoint() { return import.meta.env.VITE_AI_ANALYSIS_ENDPOINT?.trim() || '' }
+function sameOriginEndpoint() {\n  if (typeof window === 'undefined') return ''\n  if (window.location.hostname.endsWith('github.io')) return ''\n  return '/api/analyze'\n}\nexport function getAnalysisEndpoint() { return import.meta.env.VITE_AI_ANALYSIS_ENDPOINT?.trim() || sameOriginEndpoint() }
 export async function requestAnalysis(request: AnalysisRequest, endpoint = getAnalysisEndpoint(), timeoutMs = 30_000) {
   if (!endpoint) throw new Error('AI解析サーバーがまだ設定されていません')
   const controller = new AbortController()
