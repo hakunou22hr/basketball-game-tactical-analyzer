@@ -6,8 +6,20 @@ const isItems = (v: unknown): v is AnalysisItem[] => Array.isArray(v) && v.lengt
 const isEvidence = (v: unknown): v is Evidence => !!v && typeof v === 'object' && typeof (v as Evidence).timestamp === 'number' && ['AI GOOD','AI CHECK','AI FIX','AI KEY PLAY'].includes((v as Evidence).tag) && typeof (v as Evidence).description === 'string' && confidences.includes((v as Evidence).confidence)
 export function validateAnalysis(value: unknown): AiAnalysis {
   const v = value as AiAnalysis
-  if (!v || typeof v.summary !== 'string' || !confidences.includes(v.confidence) || typeof v.timeoutMessage !== 'string' || !v.offense || !v.defense || !isItems(v.offense.working) || !isItems(v.offense.problems) || !isItems(v.offense.scoringSources) || !isItems(v.offense.repeatPatterns) || !isItems(v.defense.working) || !isItems(v.defense.problems) || !(v.defense.keyOpponent === null || isItem(v.defense.keyOpponent)) || !isItems(v.defense.recommendations) || !isItems(v.nextThreePossessions) || !Array.isArray(v.evidence) || !v.evidence.every(isEvidence)) throw new Error('AIレスポンスの形式が不正です')
+  if (!v || typeof v.summary !== 'string' || !confidences.includes(v.confidence) || typeof v.timeoutMessage !== 'string' || !isItems(v.working) || !isItems(v.priorityFix) || !isItems(v.opponentCounter) || !isItems(v.continueOffense) || !v.offense || !v.defense || !isItems(v.offense.working) || !isItems(v.offense.problems) || !isItems(v.offense.scoringSources) || !isItems(v.offense.repeatPatterns) || !isItems(v.defense.working) || !isItems(v.defense.problems) || !(v.defense.keyOpponent === null || isItem(v.defense.keyOpponent)) || !isItems(v.defense.recommendations) || !isItems(v.nextThreePossessions) || !Array.isArray(v.evidence) || v.evidence.length > 12 || !v.evidence.every(isEvidence)) throw new Error('AIレスポンスの形式が不正です')
   return v
+}
+function unwrapAnalysis(value: unknown): unknown {
+  if (typeof value === 'string') {
+    const json = value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+    return JSON.parse(json)
+  }
+  if (!value || typeof value !== 'object') return value
+  const wrapped = value as { analysis?: unknown; output_text?: unknown; choices?: Array<{ message?: { content?: unknown } }> }
+  if (wrapped.analysis !== undefined) return unwrapAnalysis(wrapped.analysis)
+  if (wrapped.output_text !== undefined) return unwrapAnalysis(wrapped.output_text)
+  const content = wrapped.choices?.[0]?.message?.content
+  return content === undefined ? value : unwrapAnalysis(content)
 }
 export function getAnalysisEndpoint() { return import.meta.env.VITE_AI_ANALYSIS_ENDPOINT?.trim() || '' }
 export async function requestAnalysis(request: AnalysisRequest, endpoint = getAnalysisEndpoint(), timeoutMs = 30_000) {
@@ -17,7 +29,7 @@ export async function requestAnalysis(request: AnalysisRequest, endpoint = getAn
   try {
     const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, instructions: buildAnalysisInstructions(request) }), signal: controller.signal })
     if (!response.ok) throw new Error(`AI解析サーバーでエラーが発生しました (${response.status})`)
-    return validateAnalysis(await response.json())
+    return validateAnalysis(unwrapAnalysis(await response.json()))
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw new Error('AI解析が30秒以内に完了しませんでした')
     throw error
