@@ -1,54 +1,22 @@
-# AIバックエンド設定
+# WindowsローカルAIサーバー設定
 
-現在のGitHub Pages版は静的サイトです。AI戦況解析を実行するには、OpenAI APIキーを安全に保持するサーバー側の中継APIが必要です。
+Vercelは使用しません。Windows PCが、画面とAI APIの両方を同じURLで配信します。APIキーはPCの `local-ai-server/.env.local` にだけ保存され、GitHub Pagesやブラウザには入りません。
 
-このリポジトリには Vercel Functions 用の中継APIを含めています。
+1. Node.js 22をインストールし、初回だけリポジトリのフォルダーで `npm install` を実行します。
+2. `local-ai-server/.env.example` をコピーし、名前を `.env.local` にします。
+3. `.env.local` の `OPENAI_API_KEY=` の右側へAPIキーを貼り付けます。必要なら `OPENAI_MODEL=` に画像入力対応モデル名を設定します（空欄時は `gpt-4.1-mini`）。
+4. `local-ai-server/start-ai-server.bat` をダブルクリックします。
+5. PCでは <http://localhost:8787>、同じWi-FiのiPhone/iPadでは、画面に表示された `http://PCのIPアドレス:8787` を開き、「AI接続を確認」を押します。
 
-- `/api/analyze` : 抽出フレームを OpenAI Responses API に送り、AI GAME PLAN JSON を返す
-- `/api/health` : APIキー設定の有無を確認する
-- `vercel.json` : Vercelデプロイ設定
+初回にWindows Firewallが確認を出した場合は、**プライベートネットワークのみ許可してください**。パブリックネットワークを許可したり、ルーターでポート8787をインターネットへ公開したりしないでください。
 
-## 1. VercelにこのGitHubリポジトリをImport
+HTTPのLAN URLではブラウザの制約によりライブカメラが使えない場合があります。その場合も「映像を選択」から端末内の録画済み動画を選び、AI解析できます。
 
-Vercelで `hakunou22hr/basketball-game-tactical-analyzer` をImportしてデプロイします。
+## 開発者向け
 
-## 2. VercelのEnvironment Variables
+- `npm run local-ai`: ビルド済みの画面とAI APIを起動
+- `npm run local-app`: 画面をビルドしてからAIサーバーを起動
+- `GET /api/health`: キー設定済みなら `{"ok":true,"ai":"ready"}`、未設定なら `{"ok":false,"ai":"api-key-missing"}`
+- `POST /api/analyze`: 最大14枚の時刻付きJPEGフレーム、チーム、解析視点、対象時間だけを受信
 
-必須:
-
-- `OPENAI_API_KEY` : OpenAI APIキー
-
-推奨:
-
-- `OPENAI_MODEL=gpt-5.6`
-- `ALLOWED_ORIGIN=https://hakunou22hr.github.io`
-
-APIキーを `VITE_*` 変数やフロントエンドコードに入れないでください。
-
-## 3. Vercel版で使う場合
-
-Vercel上ではフロントエンドが同一オリジンの `/api/analyze` を自動利用します。
-追加の `VITE_AI_ANALYSIS_ENDPOINT` は不要です。
-
-## 4. GitHub Pages版から使う場合
-
-GitHubリポジトリの Actions variable に次を設定します。
-
-`VITE_AI_ANALYSIS_ENDPOINT=https://<あなたのVercelドメイン>/api/analyze`
-
-設定後、GitHub Pagesを再ビルドしてください。
-
-## 5. 接続確認
-
-ブラウザで次を開きます。
-
-`https://<あなたのVercelドメイン>/api/health`
-
-`{"ok":true,...}` が返ればAIバックエンドは利用可能です。
-
-その後アプリのAI戦況解析パネルで「AI接続」が未設定ではなくなり、
-動画から抽出されたJPEGフレームを使って実際のAI解析が実行されます。
-
-## プライバシー
-
-動画ファイル全体はOpenAIへ送信しません。ブラウザが抽出したJPEGフレームだけを中継API経由で送信します。
+動画ファイル全体は送信しません。OpenAIへの通信はこのローカルサーバーだけが行い、APIキーをレスポンスやログへ出しません。

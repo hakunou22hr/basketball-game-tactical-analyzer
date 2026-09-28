@@ -1,0 +1,16 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import { createAppServer, serverBanner } from './server.mjs'
+
+const valid={summary:'戦況',confidence:'low',working:[],priorityFix:[],opponentCounter:[],continueOffense:[],offense:{working:[],problems:[],scoringSources:[],repeatPatterns:[]},defense:{working:[],problems:[],keyOpponent:null,recommendations:[]},nextThreePossessions:[],timeoutMessage:'次の3本を守ろう',evidence:[]}
+const request={team:'濃色',perspective:'全体',range:{start:0,end:1},frames:[{timestamp:1,image:'data:image/jpeg;base64,AAAA',team:'濃色',perspective:'全体'}]}
+const servers: ReturnType<typeof createAppServer>[]=[]
+async function start(fetchImpl?:typeof fetch){const server=createAppServer(fetchImpl?{fetchImpl}:{});servers.push(server);await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const address=server.address();if(!address||typeof address==='string')throw new Error('listen failed');return `http://127.0.0.1:${address.port}`}
+afterEach(async()=>{delete process.env.OPENAI_API_KEY;await Promise.all(servers.splice(0).map(server=>new Promise<void>(resolve=>server.close(()=>resolve()))))})
+
+describe('Windows local AI server',()=>{
+  it('reports a missing API key from /api/health',async()=>{const base=await start();const response=await fetch(`${base}/api/health`);expect(response.status).toBe(503);expect(await response.json()).toEqual({ok:false,ai:'api-key-missing'})})
+  it('reports ready from /api/health without exposing the key',async()=>{process.env.OPENAI_API_KEY='secret';const base=await start();const body=await (await fetch(`${base}/api/health`)).json();expect(body).toEqual({ok:true,ai:'ready'});expect(JSON.stringify(body)).not.toContain('secret')})
+  it('sends timestamped JPEG frames and returns a structured analysis',async()=>{process.env.OPENAI_API_KEY='secret';let sent:any;const mock=async(_url:any,init:any)=>{sent=JSON.parse(init.body);return {ok:true,json:async()=>({output_text:JSON.stringify(valid)})} as Response};const base=await start(mock as typeof fetch);const response=await fetch(`${base}/api/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});expect(await response.json()).toEqual({analysis:valid});expect(sent.input[0].content).toEqual(expect.arrayContaining([expect.objectContaining({type:'input_image',image_url:request.frames[0].image}),expect.objectContaining({type:'input_text',text:'timestamp: 1.00 sec'})]));expect(JSON.stringify(sent)).not.toContain('secret')})
+  it('rejects an invalid AI response in Japanese',async()=>{process.env.OPENAI_API_KEY='secret';const mock=async()=>({ok:true,json:async()=>({output_text:'not json'})} as Response);const base=await start(mock as typeof fetch);const response=await fetch(`${base}/api/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});expect(response.status).toBe(502);expect((await response.json()).error).toContain('不正な応答')})
+  it('shows localhost and the LAN URL in its startup banner',()=>{const banner=serverBanner(8787,['192.168.1.20']);expect(banner).toContain('http://localhost:8787');expect(banner).toContain('http://192.168.1.20:8787')})
+})

@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "local-ai": "node local-ai-server/server.mjs",
+    "local-app": "npm run build && npm run local-ai"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

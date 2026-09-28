@@ -22,14 +22,10 @@ npm run dev
 
 GitHub Pages: <https://hakunou22hr.github.io/basketball-game-tactical-analyzer/>
 
-## AI VIDEO ANALYSIS
+## AI VIDEO ANALYSIS（Windowsローカル版）
 
-AI戦況解析はブラウザ内で動画から必要なJPEGフレームだけを抽出し、中継APIに送信します。動画ファイル全体は送信しません。
+Vercelは使用しません。`npm run local-app`（またはWindowsの `local-ai-server/start-ai-server.bat`）で、PCをAI解析サーバーにします。PCは <http://localhost:8787>、同じWi-FiのiPhone/iPadは起動画面に出るLAN用URLを開いてください。
 
-```bash
-VITE_AI_ANALYSIS_ENDPOINT=https://your-secure-relay.example/analyze npm run dev
-```
+APIキーは `local-ai-server/.env.local` にだけ保存します。GitHub Pages版は引き続き閲覧、動画読み込み、手動記録、簡易ルール分析に利用でき、AIサーバー未接続と表示します。ローカル版は同一オリジンの `/api/analyze` を自動使用し、動画全体ではなくブラウザが抽出したJPEGフレームだけを送ります。
 
-APIキーはフロントエンドに設定せず、中継API側で安全に管理してください。エンドポイント未設定時はAI解析を行わず、手動タグと簡易ルールアドバイスのみ動作します。
-
-中継APIには、選択チーム・解析視点・解析範囲・時刻付きJPEGフレームと、出力JSONの指示を `POST application/json` で送ります。APIは指示どおりの解析JSONを直接返すほか、`analysis`、`output_text`、または OpenAI互換の `choices[0].message.content` にJSON文字列を格納して返すこともできます。映像から確認できない内容は推測せず、信頼度を `unknown` として返してください。
+初回設定は [LOCAL_AI_SETUP.md](LOCAL_AI_SETUP.md)、詳細は [AI_BACKEND_SETUP.md](AI_BACKEND_SETUP.md) を参照してください。Windows Firewallでは**プライベートネットワークのみ許可してください**。HTTPのLAN接続ではライブカメラが制限される場合がありますが、端末内の録画済み動画を選択するAI解析は利用できます。ポート8787をインターネットへ公開しないでください。
