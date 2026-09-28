@@ -7,6 +7,8 @@ export interface AnalysisItem { text: string; confidence: Confidence }
 export interface Evidence { timestamp: number; tag: 'AI GOOD' | 'AI CHECK' | 'AI FIX' | 'AI KEY PLAY'; description: string; confidence: Confidence }
 export interface AiAnalysis {
   summary: string; confidence: Confidence
+  working: AnalysisItem[]; priorityFix: AnalysisItem[]
+  opponentCounter: AnalysisItem[]; continueOffense: AnalysisItem[]
   offense: { working: AnalysisItem[]; problems: AnalysisItem[]; scoringSources: AnalysisItem[]; repeatPatterns: AnalysisItem[] }
   defense: { working: AnalysisItem[]; problems: AnalysisItem[]; keyOpponent: AnalysisItem | null; recommendations: AnalysisItem[] }
   nextThreePossessions: AnalysisItem[]; timeoutMessage: string; evidence: Evidence[]

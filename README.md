@@ -31,3 +31,5 @@ VITE_AI_ANALYSIS_ENDPOINT=https://your-secure-relay.example/analyze npm run dev
 ```
 
 APIキーはフロントエンドに設定せず、中継API側で安全に管理してください。エンドポイント未設定時はAI解析を行わず、手動タグと簡易ルールアドバイスのみ動作します。
+
+中継APIには、選択チーム・解析視点・解析範囲・時刻付きJPEGフレームと、出力JSONの指示を `POST application/json` で送ります。APIは指示どおりの解析JSONを直接返すほか、`analysis`、`output_text`、または OpenAI互換の `choices[0].message.content` にJSON文字列を格納して返すこともできます。映像から確認できない内容は推測せず、信頼度を `unknown` として返してください。
