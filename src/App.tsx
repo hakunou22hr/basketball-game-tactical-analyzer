@@ -4,7 +4,7 @@ import { loadGames, saveGame } from './db'
 import { download, toCsv, toHtml } from './export'
 import type { Game, Moment, Perspective, Rating } from './types'
 import { extractFrames, resolveRange } from './ai/frameExtractor'
-import { getAnalysisEndpoint, requestAnalysis } from './ai/client'
+import { checkAiHealth, getAnalysisEndpoint, requestAnalysis } from './ai/client'
 import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
 import { captureLiveFrame } from './live/liveFrameCapture'
 import { createRecorder, createRecordingBlob, saveRecording } from './live/recorder'
@@ -22,7 +22,7 @@ const demoMoments: Moment[] = [
   {id:'d3',time:67,perspective:'トランジション',rating:'FIX',note:'ターンオーバー後の戻りが遅い',createdAt:new Date().toISOString()}
 ]
 const rangeLabel = (range: AnalysisRange) => ({ current: '現在の瞬間', last15: '直近15秒', last30: '直近30秒' })[range]
-const connectionLabel = { unset: '未設定', ready: '接続設定済み', connected: '接続済み', error: '接続エラー' } as const
+const connectionLabel = { unset: '未接続', ready: '未接続', connected: '接続済み', analyzing: '解析中', error: 'エラー' } as const
 
 export default function App() {
   const video = useRef<HTMLVideoElement>(null)
@@ -56,7 +56,7 @@ export default function App() {
   const [replayUrl, setReplayUrl] = useState('')
   const [liveAiEnabled, setLiveAiEnabled] = useState(true)
   const [liveStatus, setLiveStatus] = useState('')
-  const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'error'>(getAnalysisEndpoint() ? 'ready' : 'unset')
+  const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'analyzing'|'error'>(getAnalysisEndpoint() ? 'ready' : 'unset')
   const [analysisMeta, setAnalysisMeta] = useState<{ target: string; range: string; at: string } | null>(null)
   const stats = useMemo(() => summarize(moments), [moments])
   const game = (): Game => ({ id: 'current-game', title: 'ゲーム分析', team, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), moments })
@@ -70,6 +70,12 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [recording])
   useEffect(() => () => cameraStream.current?.getTracks().forEach(track => track.stop()), [])
+  async function verifyConnection() {
+    setAiError('')
+    try { const health=await checkAiHealth(); if(health.ok){setAiConnection('connected')} else {setAiConnection('error');setAiError(health.ai==='api-key-missing'?'OpenAI APIキーが設定されていません':'AI解析：未接続')} }
+    catch(error){setAiConnection('error');setAiError(error instanceof Error?error.message:'AI解析：未接続')}
+  }
+  useEffect(() => { if(getAnalysisEndpoint()) void verifyConnection() }, [])
 
   useEffect(() => {
     if (!recording) { liveFrames.current = []; return }
@@ -104,11 +110,11 @@ export default function App() {
     if (!video.current || !source) { setAiError('解析する試合映像を読み込んでください'); return }
     try {
       const range = resolveRange(analysisRange, time, duration)
-      setProgress('フレーム抽出中'); const frames = analysisRange === 'current'
+      setAiConnection('analyzing'); setProgress('フレーム抽出中'); const frames = analysisRange === 'current'
         ? [captureLiveFrame(video.current, team, perspective)]
         : await extractFrames(video.current, range, team, perspective)
-      setProgress('攻撃解析中'); await new Promise(resolve => setTimeout(resolve, 200))
-      setProgress('守備解析中'); const resultPromise = requestAnalysis({ team, perspective, range, frames })
+      setProgress('AIサーバーへ送信中'); await new Promise(resolve => setTimeout(resolve, 150)); setProgress('オフェンス解析中'); await new Promise(resolve => setTimeout(resolve, 200))
+      setProgress('ディフェンス解析中'); const resultPromise = requestAnalysis({ team, perspective, range, frames })
       await new Promise(resolve => setTimeout(resolve, 200)); setProgress('ゲームプラン生成中')
       setAiResult(await resultPromise); setAiConnection('connected')
       setAnalysisMeta({ target: `${team}チーム・${perspective}`, range: rangeLabel(analysisRange), at: new Date().toLocaleTimeString('ja-JP') })
@@ -138,6 +144,7 @@ export default function App() {
   }
   async function startCamera() {
     setAiError(''); setLiveStatus('カメラを起動中')
+    if (!window.isSecureContext) { setLiveStatus(''); setAiError('ライブカメラにはHTTPSが必要です。\n録画済み動画の解析は利用できます。'); return }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: true })
       cameraStream.current?.getTracks().forEach(track => track.stop())
@@ -213,12 +220,13 @@ export default function App() {
       </section>
 
       <section className="ai-panel panel">
-        <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span className={`connection ${aiConnection}`}>● AI接続: {connectionLabel[aiConnection]}</span></div>
+        <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span className={`connection ${aiConnection}`}>● AI{connectionLabel[aiConnection]}</span></div>
         <p className="privacy-note">動画全体ではなく抽出フレームのみ送信・応答待ちは最大30秒</p>
+        <button type="button" onClick={verifyConnection}>AI接続を確認</button>
         <div className="range-options">{([['current','現在の瞬間'],['last15','直近15秒'],['last30','直近30秒']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
         <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
         {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span><span>範囲 <b>{analysisMeta.range}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}
-        {progress&&<div className="progress" aria-live="polite">{['フレーム抽出中','攻撃解析中','守備解析中','ゲームプラン生成中'].map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
+        {progress&&<div className="progress" aria-live="polite">{['フレーム抽出中','AIサーバーへ送信中','オフェンス解析中','ディフェンス解析中','ゲームプラン生成中'].map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
         {aiError&&<div className="ai-error" role="alert">{aiError}<small>手動タグと簡易ルールアドバイスは引き続き利用できます。</small></div>}
       </section>
 
