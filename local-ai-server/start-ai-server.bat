@@ -1,21 +1,39 @@
 @echo off
-chcp 65001 > nul
+setlocal
 cd /d "%~dp0.."
-where node > nul 2>&1
+
+where node >nul 2>&1
 if errorlevel 1 (
-  echo Node.jsが見つかりません
-  echo Node.js 22をインストールしてから、もう一度実行してください。
+  echo ERROR: Node.js was not found.
+  echo Install Node.js 22 LTS, then run this file again.
   pause
   exit /b 1
 )
+
+where npm >nul 2>&1
+if errorlevel 1 (
+  echo ERROR: npm was not found.
+  echo Reinstall Node.js 22 LTS, then run this file again.
+  pause
+  exit /b 1
+)
+
 if not exist dist (
-  echo アプリを準備しています...
+  echo Preparing the app...
   call npm run build
   if errorlevel 1 (
-    echo アプリの準備に失敗しました。
+    echo ERROR: App build failed.
     pause
     exit /b 1
   )
 )
-node local-ai-server/server.mjs
+
+echo Starting Basketball Tactical Analyzer AI server...
+echo Keep this window open while using AI analysis.
+node local-ai-server\server.mjs
+
+set "EXITCODE=%ERRORLEVEL%"
+echo.
+echo AI server stopped. Exit code: %EXITCODE%
 pause
+exit /b %EXITCODE%
