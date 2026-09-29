@@ -251,7 +251,8 @@ export default function App() {
             <input value={aiServerBase} onChange={e=>setAiServerBase(e.target.value)} placeholder="http://127.0.0.1:8787" />
           </label>
           <button type="button" onClick={()=>verifyConnection(aiServerBase)}>接続して確認</button>
-          <small>このPCでGitHub Pagesを開いている場合は通常 <b>http://127.0.0.1:8787</b> のままで使えます。先に <b>start-ai-server.bat</b> を起動してください。iPhone/iPadはGitHub Pagesではなく、PCの黒い画面に表示されたLAN用URLを直接開いてください。</small>
+          <a href={aiServerBase} target="_blank" rel="noreferrer">ローカルAIアプリを開く</a>
+          <small>このPCでGitHub Pagesを開いている場合は通常 <b>http://127.0.0.1:8787</b> のままで使えます。先に <b>start-ai-server.bat</b> を起動してください。接続できない場合は「ローカルAIアプリを開く」から同じ画面を開いて解析してください。iPhone/iPadはPCの黒い画面に表示されたLAN用URLを直接開いてください。</small>
         </div>
         <div className="range-options">{([['current','現在の瞬間'],['last15','直近15秒'],['last30','直近30秒']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
         <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
