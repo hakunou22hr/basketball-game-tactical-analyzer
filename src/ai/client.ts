@@ -52,12 +52,14 @@ function configuredEndpoint() {
 }
 
 export function getAnalysisEndpoint(base = getLocalAiServerBase()) {
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) return `${normalizeBase(base)}/api/analyze`
   const configured = configuredEndpoint()
   if (configured) return configured
   return `${normalizeBase(base)}/api/analyze`
 }
 
 export function getHealthEndpoint(base = getLocalAiServerBase()) {
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) return `${normalizeBase(base)}/api/health`
   const configured = configuredEndpoint()
   if (configured) return configured.replace(/\/api\/analyze\/?$/, '/api/health')
   return `${normalizeBase(base)}/api/health`
