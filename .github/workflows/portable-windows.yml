@@ -1,0 +1,76 @@
+name: Build Windows Portable Analyzer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "public/**"
+      - "local-ai-server/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "PORTABLE_WINDOWS_SETUP.md"
+      - ".github/workflows/portable-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Test
+        run: npm run test
+
+      - name: Build app
+        run: npm run build
+
+      - name: Assemble portable package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $PWD "portable-package"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $out "local-ai-server") | Out-Null
+
+          $node = (Get-Command node).Source
+          Copy-Item $node (Join-Path $out "node.exe")
+          Copy-Item "local-ai-server\server.mjs" (Join-Path $out "local-ai-server\server.mjs")
+          Copy-Item "local-ai-server\.env.example" (Join-Path $out "local-ai-server\.env.example")
+          Copy-Item "local-ai-server\START-AI-SERVER-PORTABLE.bat" (Join-Path $out "START-AI-SERVER.bat")
+          Copy-Item "PORTABLE_WINDOWS_SETUP.md" (Join-Path $out "使い方.md")
+          Copy-Item "dist" (Join-Path $out "dist") -Recurse
+
+          @"
+          Basketball Tactical Analyzer - Portable Windows
+          =================================================
+          1. START-AI-SERVER.bat をダブルクリック
+          2. 初回はメモ帳で OPENAI_API_KEY= の右側にAPIキーを入力して保存
+          3. START-AI-SERVER.bat をもう一度ダブルクリック
+          4. ブラウザで http://localhost:8787 を開く
+
+          Node.js のインストールは不要です。
+          "@ | Set-Content -Encoding UTF8 (Join-Path $out "最初にお読みください.txt")
+
+      - name: Create ZIP
+        shell: powershell
+        run: |
+          Compress-Archive -Path "portable-package\*" -DestinationPath "Basketball-Tactical-Analyzer-Portable.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Basketball-Tactical-Analyzer-Portable
+          path: Basketball-Tactical-Analyzer-Portable.zip
+          if-no-files-found: error
+          retention-days: 30
