@@ -14,7 +14,7 @@ if not exist local-ai-server\.env.local (
     copy /Y local-ai-server\.env.example local-ai-server\.env.local >nul
   ) else (
     > local-ai-server\.env.local echo OPENAI_API_KEY=
-    >> local-ai-server\.env.local echo OPENAI_MODEL=gpt-4.1-mini
+    >> local-ai-server\.env.local echo OPENAI_MODEL=
     >> local-ai-server\.env.local echo PORT=8787
   )
   echo First-time setup:
@@ -26,8 +26,11 @@ if not exist local-ai-server\.env.local (
   exit /b 0
 )
 
-findstr /B /C:"OPENAI_API_KEY=" local-ai-server\.env.local | findstr /V /C:"OPENAI_API_KEY=$" >nul
-if errorlevel 1 (
+set "OPENAI_KEY="
+for /f "usebackq tokens=1,* delims==" %%A in ("local-ai-server\.env.local") do (
+  if /I "%%A"=="OPENAI_API_KEY" set "OPENAI_KEY=%%B"
+)
+if not defined OPENAI_KEY (
   echo ERROR: OPENAI_API_KEY is empty.
   echo Opening the settings file now.
   start "" notepad.exe local-ai-server\.env.local
