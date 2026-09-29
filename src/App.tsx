@@ -4,7 +4,7 @@ import { loadGames, saveGame } from './db'
 import { download, toCsv, toHtml } from './export'
 import type { Game, Moment, Perspective, Rating } from './types'
 import { extractFrames, resolveRange } from './ai/frameExtractor'
-import { checkAiHealth, getAnalysisEndpoint, requestAnalysis } from './ai/client'
+import { checkAiHealth, getLocalAiServerBase, requestAnalysis, saveLocalAiServerBase } from './ai/client'
 import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
 import { captureLiveFrame } from './live/liveFrameCapture'
 import { createRecorder, createRecordingBlob, saveRecording } from './live/recorder'
@@ -56,7 +56,7 @@ export default function App() {
   const [replayUrl, setReplayUrl] = useState('')
   const [liveAiEnabled, setLiveAiEnabled] = useState(true)
   const [liveStatus, setLiveStatus] = useState('')
-  const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'analyzing'|'error'>(getAnalysisEndpoint() ? 'ready' : 'unset')
+  const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'analyzing'|'error'>('ready')\n  const [aiServerBase, setAiServerBase] = useState(getLocalAiServerBase())
   const [analysisMeta, setAnalysisMeta] = useState<{ target: string; range: string; at: string } | null>(null)
   const stats = useMemo(() => summarize(moments), [moments])
   const game = (): Game => ({ id: 'current-game', title: 'ゲーム分析', team, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), moments })
@@ -70,12 +70,24 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [recording])
   useEffect(() => () => cameraStream.current?.getTracks().forEach(track => track.stop()), [])
-  async function verifyConnection() {
+  async function verifyConnection(base = aiServerBase) {
     setAiError('')
-    try { const health=await checkAiHealth(); if(health.ok){setAiConnection('connected')} else {setAiConnection('error');setAiError(health.ai==='api-key-missing'?'OpenAI APIキーが設定されていません':'AI解析：未接続')} }
-    catch(error){setAiConnection('error');setAiError(error instanceof Error?error.message:'AI解析：未接続')}
+    const savedBase = saveLocalAiServerBase(base)
+    setAiServerBase(savedBase)
+    setAiConnection('ready')
+    try {
+      const health = await checkAiHealth()
+      if (health.ok) setAiConnection('connected')
+      else {
+        setAiConnection('error')
+        setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。PCの local-ai-server/.env.local を確認してください。' : 'AI解析：未接続')
+      }
+    } catch(error) {
+      setAiConnection('error')
+      setAiError(error instanceof Error ? error.message : 'AI解析：未接続')
+    }
   }
-  useEffect(() => { if(getAnalysisEndpoint()) void verifyConnection() }, [])
+  useEffect(() => { void verifyConnection(getLocalAiServerBase()) }, [])
 
   useEffect(() => {
     if (!recording) { liveFrames.current = []; return }
@@ -106,9 +118,15 @@ export default function App() {
   function exportAs(kind: 'json'|'csv'|'html'|'pdf') { const g=game(); if(kind==='pdf'){ const w=window.open(); if(w){w.document.write(toHtml(g));w.document.close();w.print()} return } const data=kind==='json'?JSON.stringify(g,null,2):kind==='csv'?toCsv(g):toHtml(g); download(data, kind==='json'?'application/json':kind==='csv'?'text/csv':'text/html',`game-review.${kind}`) }
   async function analyzeVideo() {
     setAiError(''); setAiResult(null); setShowTimeout(false)
-    if (!getAnalysisEndpoint()) { setAiError('AI解析サーバーがまだ設定されていません'); return }
     if (!video.current || !source) { setAiError('解析する試合映像を読み込んでください'); return }
     try {
+      setAiConnection('ready')
+      const health = await checkAiHealth()
+      if (!health.ok) {
+        setAiConnection('error')
+        setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。PCの local-ai-server/.env.local を確認してください。' : 'AIサーバーに接続できません。PCで start-ai-server.bat を起動してください。')
+        return
+      }
       const range = resolveRange(analysisRange, time, duration)
       setAiConnection('analyzing'); setProgress('フレーム抽出中'); const frames = analysisRange === 'current'
         ? [captureLiveFrame(video.current, team, perspective)]
@@ -123,9 +141,15 @@ export default function App() {
   }
   async function analyzeLiveRecording() {
     if (!liveVideo.current || liveAnalysisBusy.current) return
-    if (!getAnalysisEndpoint()) { setAiConnection('unset'); setAiError('AI解析サーバーがまだ設定されていません'); return }
     liveAnalysisBusy.current = true; setProgress('録画映像をAI解析中'); setLiveStatus('録画映像をAI解析中')
     try {
+      const health = await checkAiHealth()
+      if (!health.ok) {
+        setAiConnection('error')
+        setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。PCの local-ai-server/.env.local を確認してください。' : 'AIサーバーに接続できません。PCで start-ai-server.bat を起動してください。')
+        setLiveStatus('')
+        return
+      }
       const latest = captureLiveFrame(liveVideo.current, team, perspective)
       liveFrames.current = [...liveFrames.current, latest].filter(item => latest.timestamp - item.timestamp <= 30)
       const seconds = analysisRange === 'current' ? 0 : analysisRange === 'last15' ? 15 : 30
@@ -222,7 +246,14 @@ export default function App() {
       <section className="ai-panel panel">
         <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span className={`connection ${aiConnection}`}>● AI{connectionLabel[aiConnection]}</span></div>
         <p className="privacy-note">動画全体ではなく抽出フレームのみ送信・応答待ちは最大30秒</p>
-        <button type="button" onClick={verifyConnection}>AI接続を確認</button>
+        <div className="ai-server-config">
+          <label>AIサーバーURL
+            <input value={aiServerBase} onChange={e=>setAiServerBase(e.target.value)} placeholder="http://127.0.0.1:8787" />
+          </label>
+          <button type="button" onClick={()=>verifyConnection(aiServerBase)}>接続して確認</button>
+          <a href={aiServerBase} target="_blank" rel="noreferrer">ローカルAIアプリを開く</a>
+          <small>このPCでGitHub Pagesを開いている場合は通常 <b>http://127.0.0.1:8787</b> のままで使えます。先に <b>start-ai-server.bat</b> を起動してください。接続できない場合は「ローカルAIアプリを開く」から同じ画面を開いて解析してください。iPhone/iPadはPCの黒い画面に表示されたLAN用URLを直接開いてください。</small>
+        </div>
         <div className="range-options">{([['current','現在の瞬間'],['last15','直近15秒'],['last30','直近30秒']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
         <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
         {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span><span>範囲 <b>{analysisMeta.range}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}

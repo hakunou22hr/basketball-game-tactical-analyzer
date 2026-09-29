@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { frameTimes, resolveRange } from './frameExtractor'
-import { requestAnalysis, validateAnalysis } from './client'
+import { getAnalysisEndpoint, requestAnalysis, saveLocalAiServerBase, validateAnalysis } from './client'
 
 const valid = { summary:'戦況', confidence:'low', working:[], priorityFix:[], opponentCounter:[], continueOffense:[], offense:{working:[],problems:[],scoringSources:[],repeatPatterns:[]}, defense:{working:[],problems:[],keyOpponent:null,recommendations:[]}, nextThreePossessions:[], timeoutMessage:'短い指示', evidence:[{timestamp:10,tag:'AI FIX',description:'戻り',confidence:'low'}] }
 describe('AI video analysis', () => {
@@ -9,6 +9,14 @@ describe('AI video analysis', () => {
   it('validates response including low confidence and timeline evidence', () => expect(validateAnalysis(valid).evidence[0].tag).toBe('AI FIX'))
   it('rejects malformed JSON', () => expect(()=>validateAnalysis({...valid,confidence:'certain'})).toThrow('形式が不正'))
   it('does not pretend to analyze without an endpoint', async () => { await expect(requestAnalysis({team:'濃色',perspective:'全体',range:{start:0,end:1},frames:[]},'')).rejects.toThrow('接続できません') })
+  it('uses localhost as the default AI server on GitHub Pages', () => {
+    const storage = new Map<string,string>()
+    vi.stubGlobal('window', { location:{hostname:'hakunou22hr.github.io',port:'',origin:'https://hakunou22hr.github.io'}, localStorage:{getItem:(k:string)=>storage.get(k)??null,setItem:(k:string,v:string)=>storage.set(k,v)} })
+    expect(getAnalysisEndpoint()).toBe('http://127.0.0.1:8787/api/analyze')
+    expect(saveLocalAiServerBase('http://192.168.1.20:8787/')).toBe('http://192.168.1.20:8787')
+    expect(getAnalysisEndpoint()).toBe('http://192.168.1.20:8787/api/analyze')
+    vi.unstubAllGlobals()
+  })
   it('reports API errors', async () => { vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,status:500})); await expect(requestAnalysis({team:'淡色',perspective:'全体',range:{start:0,end:1},frames:[]},'/api')).rejects.toThrow('(500)'); vi.unstubAllGlobals() })
   it('accepts a JSON result wrapped by a relay', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,json:async()=>({analysis:JSON.stringify(valid)})}))
