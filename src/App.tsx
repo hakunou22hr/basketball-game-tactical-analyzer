@@ -8,6 +8,7 @@ import { checkAiHealth, getLocalAiServerBase, requestAnalysis, saveLocalAiServer
 import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
 import { captureLiveFrame } from './live/liveFrameCapture'
 import { createRecorder, createRecordingBlob, saveRecording } from './live/recorder'
+import { analyzeWithoutApi } from './localAnalysis'
 
 const perspectives: { name: Perspective; icon: string }[] = [
   {name:'全体',icon:'⌗'}, {name:'オフェンス',icon:'↗'}, {name:'ディフェンス',icon:'◇'}, {name:'ブレイク',icon:'»'},
@@ -56,6 +57,7 @@ export default function App() {
   const [replayUrl, setReplayUrl] = useState('')
   const [liveAiEnabled, setLiveAiEnabled] = useState(true)
   const [liveStatus, setLiveStatus] = useState('')
+  const [analysisMode, setAnalysisMode] = useState<'local'|'advanced'>('local')
   const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'analyzing'|'error'>('ready')
   const [aiServerBase, setAiServerBase] = useState(getLocalAiServerBase())
   const [analysisMeta, setAnalysisMeta] = useState<{ target: string; range: string; at: string } | null>(null)
@@ -88,7 +90,7 @@ export default function App() {
       setAiError(error instanceof Error ? error.message : 'AI解析：未接続')
     }
   }
-  useEffect(() => { void verifyConnection(getLocalAiServerBase()) }, [])
+  useEffect(() => { if (analysisMode === 'advanced') void verifyConnection(getLocalAiServerBase()) }, [analysisMode])
 
   useEffect(() => {
     if (!recording) { liveFrames.current = []; return }
@@ -121,45 +123,62 @@ export default function App() {
     setAiError(''); setAiResult(null); setShowTimeout(false)
     if (!video.current || !source) { setAiError('解析する試合映像を読み込んでください'); return }
     try {
-      setAiConnection('ready')
-      const health = await checkAiHealth()
-      if (!health.ok) {
-        setAiConnection('error')
-        setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。PCの local-ai-server/.env.local を確認してください。' : 'AIサーバーに接続できません。PCで start-ai-server.bat を起動してください。')
-        return
-      }
       const range = resolveRange(analysisRange, time, duration)
-      setAiConnection('analyzing'); setProgress('フレーム抽出中'); const frames = analysisRange === 'current'
+      setAiConnection('analyzing')
+      setProgress('フレーム抽出中')
+      const frames = analysisRange === 'current'
         ? [captureLiveFrame(video.current, team, perspective)]
         : await extractFrames(video.current, range, team, perspective)
-      setProgress('AIサーバーへ送信中'); await new Promise(resolve => setTimeout(resolve, 150)); setProgress('オフェンス解析中'); await new Promise(resolve => setTimeout(resolve, 200))
-      setProgress('ディフェンス解析中'); const resultPromise = requestAnalysis({ team, perspective, range, frames })
-      await new Promise(resolve => setTimeout(resolve, 200)); setProgress('ゲームプラン生成中')
-      setAiResult(await resultPromise); setAiConnection('connected')
+      const request = { team, perspective, range, frames }
+      if (analysisMode === 'local') {
+        setProgress('端末内解析中')
+        setAiResult(await analyzeWithoutApi(request, moments))
+        setAiConnection('connected')
+      } else {
+        setAiConnection('ready')
+        const health = await checkAiHealth()
+        if (!health.ok) {
+          setAiConnection('error')
+          setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。高度AI解析を使わない場合は「APIキー不要」を選んでください。' : 'AIサーバーに接続できません。「APIキー不要」ならサーバーなしで解析できます。')
+          return
+        }
+        setAiConnection('analyzing')
+        setProgress('AIサーバーへ送信中')
+        await new Promise(resolve => setTimeout(resolve, 120))
+        setProgress('ゲームプラン生成中')
+        setAiResult(await requestAnalysis(request))
+        setAiConnection('connected')
+      }
       setAnalysisMeta({ target: `${team}チーム・${perspective}`, range: rangeLabel(analysisRange), at: new Date().toLocaleTimeString('ja-JP') })
-    } catch (error) { setAiConnection('error'); setAiError(error instanceof Error ? error.message : 'AI解析に失敗しました') }
+    } catch (error) { setAiConnection('error'); setAiError(error instanceof Error ? error.message : '戦況解析に失敗しました') }
     finally { setProgress('') }
   }
   async function analyzeLiveRecording() {
     if (!liveVideo.current || liveAnalysisBusy.current) return
-    liveAnalysisBusy.current = true; setProgress('録画映像をAI解析中'); setLiveStatus('録画映像をAI解析中')
+    liveAnalysisBusy.current = true; setProgress('録画映像を解析中'); setLiveStatus('録画映像を解析中')
     try {
-      const health = await checkAiHealth()
-      if (!health.ok) {
-        setAiConnection('error')
-        setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。PCの local-ai-server/.env.local を確認してください。' : 'AIサーバーに接続できません。PCで start-ai-server.bat を起動してください。')
-        setLiveStatus('')
-        return
-      }
       const latest = captureLiveFrame(liveVideo.current, team, perspective)
       liveFrames.current = [...liveFrames.current, latest].filter(item => latest.timestamp - item.timestamp <= 30)
       const seconds = analysisRange === 'current' ? 0 : analysisRange === 'last15' ? 15 : 30
       const frames = seconds ? liveFrames.current.filter(item => latest.timestamp - item.timestamp <= seconds) : [latest]
       const range = { start: frames[0]?.timestamp ?? latest.timestamp, end: latest.timestamp }
-      setAiResult(await requestAnalysis({ team, perspective, range, frames })); setAiError(''); setAiConnection('connected')
+      const request = { team, perspective, range, frames }
+      if (analysisMode === 'local') {
+        setAiResult(await analyzeWithoutApi(request, moments))
+      } else {
+        const health = await checkAiHealth()
+        if (!health.ok) {
+          setAiConnection('error')
+          setAiError(health.ai === 'api-key-missing' ? 'OpenAI APIキーが設定されていません。高度AI解析を使わない場合は「APIキー不要」を選んでください。' : 'AIサーバーに接続できません。「APIキー不要」ならサーバーなしで解析できます。')
+          setLiveStatus('')
+          return
+        }
+        setAiResult(await requestAnalysis(request))
+      }
+      setAiError(''); setAiConnection('connected')
       setAnalysisMeta({ target: `${team}チーム・${perspective}`, range: rangeLabel(analysisRange), at: new Date().toLocaleTimeString('ja-JP') })
-      setLiveStatus('最新のAI解析を更新しました')
-    } catch (error) { setAiConnection('error'); setAiError(error instanceof Error ? error.message : 'ライブAI解析に失敗しました'); setLiveStatus('') }
+      setLiveStatus(analysisMode === 'local' ? '最新の端末内解析を更新しました' : '最新の高度AI解析を更新しました')
+    } catch (error) { setAiConnection('error'); setAiError(error instanceof Error ? error.message : 'ライブ戦況解析に失敗しました'); setLiveStatus('') }
     finally { liveAnalysisBusy.current = false; setProgress('') }
   }
   function addAiEvidence() {
@@ -183,7 +202,7 @@ export default function App() {
     try {
       mediaRecorder.current = createRecorder(cameraStream.current, blob => {
         const url = URL.createObjectURL(blob)
-        setRecordedBlob(blob); setReplayUrl(''); setSource(url); setCameraActive(false); setRecording(false); setLiveStatus('録画完了・再生とAI解析ができます')
+        setRecordedBlob(blob); setReplayUrl(''); setSource(url); setCameraActive(false); setRecording(false); setLiveStatus('録画完了・再生と戦況解析ができます')
         cameraStream.current?.getTracks().forEach(track => track.stop()); cameraStream.current = null
         requestAnimationFrame(() => { if (liveVideo.current) liveVideo.current.srcObject = null })
       }, MediaRecorder, chunk => {
@@ -204,7 +223,7 @@ export default function App() {
     })
     if (!recordingChunks.current.length) return
     const url = URL.createObjectURL(createRecordingBlob(recordingChunks.current, recorder.mimeType))
-    setReplayUrl(url); setLiveStatus('REPLAY中も録画・ライブAI解析を継続しています')
+    setReplayUrl(url); setLiveStatus('REPLAY中も録画・ライブ戦況解析を継続しています')
   }
   function returnToLive() { setReplayUrl(''); setLiveStatus('録画中') }
   async function saveRecordedVideo() {
@@ -245,37 +264,42 @@ export default function App() {
       </section>
 
       <section className="ai-panel panel">
-        <div className="ai-heading"><div><small>AI VIDEO ANALYSIS</small><h2>AI戦況解析</h2></div><span className={`connection ${aiConnection}`}>● AI{connectionLabel[aiConnection]}</span></div>
-        <p className="privacy-note">動画全体ではなく抽出フレームのみ送信・応答待ちは最大30秒</p>
-        <div className="ai-server-config">
-          <label>AIサーバーURL
-            <input value={aiServerBase} onChange={e=>setAiServerBase(e.target.value)} placeholder="http://127.0.0.1:8787" />
-          </label>
-          <button type="button" onClick={()=>verifyConnection(aiServerBase)}>接続して確認</button>
-          <a href={aiServerBase} target="_blank" rel="noreferrer">ローカルAIアプリを開く</a>
-          <small>このPCでGitHub Pagesを開いている場合は通常 <b>http://127.0.0.1:8787</b> のままで使えます。先に <b>start-ai-server.bat</b> を起動してください。接続できない場合は「ローカルAIアプリを開く」から同じ画面を開いて解析してください。iPhone/iPadはPCの黒い画面に表示されたLAN用URLを直接開いてください。</small>
+        <div className="ai-heading"><div><small>TACTICAL VIDEO ANALYSIS</small><h2>戦況解析</h2></div><span className={`connection ${aiConnection}`}>{analysisMode==='local'?'● APIキー不要':'● AI'+connectionLabel[aiConnection]}</span></div>
+        <div className="analysis-mode">
+          <button className={analysisMode==='local'?'selected':''} onClick={()=>{setAnalysisMode('local');setAiError('');setAiConnection('connected')}}><b>APIキー不要</b><span>端末内で映像変化＋手動記録を簡易解析</span></button>
+          <button className={analysisMode==='advanced'?'selected':''} onClick={()=>setAnalysisMode('advanced')}><b>高度AI解析</b><span>任意・OpenAI APIとローカルサーバーを使用</span></button>
         </div>
+        {analysisMode==='local'
+          ? <div className="local-mode-note"><b>このモードはAPIキーもインストールも不要です。</b><span>映像は外部送信しません。選手・ボール・背番号の自動識別は行わず、映像の動き方とGOOD/CHECK/FIX記録からゲームプランを作ります。</span></div>
+          : <><p className="privacy-note">高度AI解析では動画全体ではなく抽出フレームのみ送信・応答待ちは最大30秒</p><div className="ai-server-config">
+              <label>AIサーバーURL
+                <input value={aiServerBase} onChange={e=>setAiServerBase(e.target.value)} placeholder="http://127.0.0.1:8787" />
+              </label>
+              <button type="button" onClick={()=>verifyConnection(aiServerBase)}>接続して確認</button>
+              <a href={aiServerBase} target="_blank" rel="noreferrer">ローカルAIアプリを開く</a>
+              <small>高度AI解析だけOpenAI APIキーが必要です。APIキーを使わない場合は左の「APIキー不要」を選択してください。</small>
+            </div></>}
         <div className="range-options">{([['current','現在の瞬間'],['last15','直近15秒'],['last30','直近30秒']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
-        <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || 'AI戦況解析を開始'}</button>
-        {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span><span>範囲 <b>{analysisMeta.range}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}
-        {progress&&<div className="progress" aria-live="polite">{['フレーム抽出中','AIサーバーへ送信中','オフェンス解析中','ディフェンス解析中','ゲームプラン生成中'].map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
-        {aiError&&<div className="ai-error" role="alert">{aiError}<small>手動タグと簡易ルールアドバイスは引き続き利用できます。</small></div>}
+        <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || '戦況解析を開始'}</button>
+        {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span><span>範囲 <b>{analysisMeta.range}</b></span><span>解析方式 <b>{analysisMode==='local'?'APIキー不要・端末内':'高度AI'}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}
+        {progress&&<div className="progress" aria-live="polite">{(analysisMode==='local'?['フレーム抽出中','端末内解析中','ゲームプラン生成中']:['フレーム抽出中','AIサーバーへ送信中','ゲームプラン生成中']).map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
+        {aiError&&<div className="ai-error" role="alert">{aiError}<small>「APIキー不要」モードなら、AIサーバーなしで利用できます。</small></div>}
       </section>
 
-      {aiResult&&<GamePlan result={aiResult} showTimeout={showTimeout} onTimeout={()=>setShowTimeout(v=>!v)} onAddTimeline={addAiEvidence}/>}
+      {aiResult&&<GamePlan result={aiResult} mode={analysisMode} showTimeout={showTimeout} onTimeout={()=>setShowTimeout(v=>!v)} onAddTimeline={addAiEvidence}/>}
 
       <aside className={`coach ${rating==='GOOD PLAY'?'good':rating.toLowerCase()}`}><div className="coach-label">⚡ 簡易ルールアドバイス</div><div className="coach-body"><span className="quote">“</span><p>{coachingAdvice(perspective,rating)}</p><div><b>{perspective}</b><span>{rating}</span></div></div></aside>
     </main> : <Review moments={moments} stats={stats} saved={saved} onJump={s=>{setView('analyze');setTimeout(()=>jump(s))}} onExport={exportAs} />}
-    <footer><span>TACTICAL ANALYZER · OFFLINE READY</span><span>AI解析時は必要な抽出フレームのみを送信します</span></footer>
+    <footer><span>TACTICAL ANALYZER · OFFLINE READY</span><span>{analysisMode==='local'?'APIキー不要モードは映像を外部送信しません':'高度AI解析時のみ必要な抽出フレームを送信します'}</span></footer>
   </div>
 }
 
 const confidenceLabel: Record<Confidence,string> = { high:'高', medium:'中', low:'低', unknown:'判断困難' }
 function Items({items}:{items:AnalysisItem[]}) { return items.length?<ul>{items.slice(0,3).map((item,i)=><li key={i}><span>{item.text}</span><em className={`confidence ${item.confidence}`}>{confidenceLabel[item.confidence]}</em></li>)}</ul>:<p className="unknown">判断困難</p> }
-function GamePlan({result,showTimeout,onTimeout,onAddTimeline}:{result:AiAnalysis;showTimeout:boolean;onTimeout:()=>void;onAddTimeline:()=>void}) {
-  return <section className="game-plan panel"><div className="plan-head"><div><small>AI VIDEO ANALYSIS</small><h2>AI GAME PLAN</h2></div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
+function GamePlan({result,mode,showTimeout,onTimeout,onAddTimeline}:{result:AiAnalysis;mode:'local'|'advanced';showTimeout:boolean;onTimeout:()=>void;onAddTimeline:()=>void}) {
+  return <section className="game-plan panel"><div className="plan-head"><div><small>{mode==='local'?'LOCAL TACTICAL ANALYSIS':'AI VIDEO ANALYSIS'}</small><h2>{mode==='local'?'LOCAL GAME PLAN':'AI GAME PLAN'}</h2></div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
     <div className="plan-grid"><article><b>① 現在の戦況</b><p>{result.summary}</p></article><article><b>② 今うまくいっていること</b><Items items={result.working}/></article><article><b>③ 最優先で直すこと</b><Items items={result.priorityFix}/></article><article><b>④ 次の3ポゼッション</b><Items items={result.nextThreePossessions}/></article><article><b>⑤ 相手への対策</b><Items items={result.opponentCounter}/></article><article><b>⑥ 継続すべき攻撃</b><Items items={result.continueOffense}/></article></div>
-    <div className="plan-actions"><button className="timeout-button" onClick={onTimeout}>30秒で選手に伝える</button><button onClick={onAddTimeline}>AI重要場面をタイムラインへ追加</button></div>{showTimeout&&<div className="timeout-message"><b>TIMEOUT MESSAGE</b><p>{result.timeoutMessage}</p></div>}
+    <div className="plan-actions"><button className="timeout-button" onClick={onTimeout}>30秒で選手に伝える</button><button onClick={onAddTimeline}>解析重要場面をタイムラインへ追加</button></div>{showTimeout&&<div className="timeout-message"><b>TIMEOUT MESSAGE</b><p>{result.timeoutMessage}</p></div>}
   </section>
 }
 
