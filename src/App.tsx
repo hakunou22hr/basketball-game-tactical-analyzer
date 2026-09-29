@@ -5,7 +5,7 @@ import { download, toCsv, toHtml } from './export'
 import type { Game, Moment, Perspective, Rating } from './types'
 import { extractFrames, resolveRange } from './ai/frameExtractor'
 import { checkAiHealth, getLocalAiServerBase, requestAnalysis, saveLocalAiServerBase } from './ai/client'
-import type { AiAnalysis, AnalysisItem, AnalysisRange, Confidence } from './ai/types'
+import type { AiAnalysis, AnalysisItem, AnalysisRange, CompetitionLevel, Confidence } from './ai/types'
 import { captureLiveFrame } from './live/liveFrameCapture'
 import { createRecorder, createRecordingBlob, saveRecording } from './live/recorder'
 import { analyzeWithoutApi } from './localAnalysis'
@@ -24,6 +24,7 @@ const demoMoments: Moment[] = [
 ]
 const rangeLabel = (range: AnalysisRange) => ({ current: '現在の瞬間', last15: '直近15秒', last30: '直近30秒' })[range]
 const connectionLabel = { unset: '未接続', ready: '未接続', connected: '接続済み', analyzing: '解析中', error: 'エラー' } as const
+const competitionLevels: CompetitionLevel[] = ['小学生','中学生','高校生','大学','一般']
 
 export default function App() {
   const video = useRef<HTMLVideoElement>(null)
@@ -58,6 +59,7 @@ export default function App() {
   const [liveAiEnabled, setLiveAiEnabled] = useState(true)
   const [liveStatus, setLiveStatus] = useState('')
   const [analysisMode, setAnalysisMode] = useState<'local'|'advanced'>('local')
+  const [competitionLevel, setCompetitionLevel] = useState<CompetitionLevel>('小学生')
   const [aiConnection, setAiConnection] = useState<'unset'|'ready'|'connected'|'analyzing'|'error'>('ready')
   const [aiServerBase, setAiServerBase] = useState(getLocalAiServerBase())
   const [analysisMeta, setAnalysisMeta] = useState<{ target: string; range: string; at: string } | null>(null)
@@ -132,7 +134,7 @@ export default function App() {
       const request = { team, perspective, range, frames }
       if (analysisMode === 'local') {
         setProgress('端末内解析中')
-        setAiResult(await analyzeWithoutApi(request, moments))
+        setAiResult(await analyzeWithoutApi(request, moments, competitionLevel))
         setAiConnection('connected')
       } else {
         setAiConnection('ready')
@@ -164,7 +166,7 @@ export default function App() {
       const range = { start: frames[0]?.timestamp ?? latest.timestamp, end: latest.timestamp }
       const request = { team, perspective, range, frames }
       if (analysisMode === 'local') {
-        setAiResult(await analyzeWithoutApi(request, moments))
+        setAiResult(await analyzeWithoutApi(request, moments, competitionLevel))
       } else {
         const health = await checkAiHealth()
         if (!health.ok) {
@@ -270,7 +272,8 @@ export default function App() {
           <button className={analysisMode==='advanced'?'selected':''} onClick={()=>setAnalysisMode('advanced')}><b>高度AI解析</b><span>任意・OpenAI APIとローカルサーバーを使用</span></button>
         </div>
         {analysisMode==='local'
-          ? <div className="local-mode-note"><b>このモードはAPIキーもインストールも不要です。</b><span>映像は外部送信しません。選手・ボール・背番号の自動識別は行わず、映像の動き方とGOOD/CHECK/FIX記録からゲームプランを作ります。</span></div>
+          ? <><div className="local-mode-note"><b>このモードはAPIキーもインストールも不要です。</b><span>映像は外部送信しません。選手・ボール・背番号の自動識別は行わず、映像の動き方とGOOD/CHECK/FIX記録からゲームプランを作ります。</span></div>
+            <div className="level-selector"><span>対象カテゴリー</span><div>{competitionLevels.map(level=><button key={level} className={competitionLevel===level?'selected':''} onClick={()=>{setCompetitionLevel(level);setAiResult(null);setShowTimeout(false)}}>{level}</button>)}</div><small>カテゴリーに合わせて、用語・技術指導・精神面・交代判断の表現を変えます。</small></div></>
           : <><p className="privacy-note">高度AI解析では動画全体ではなく抽出フレームのみ送信・応答待ちは最大30秒</p><div className="ai-server-config">
               <label>AIサーバーURL
                 <input value={aiServerBase} onChange={e=>setAiServerBase(e.target.value)} placeholder="http://127.0.0.1:8787" />
@@ -281,7 +284,7 @@ export default function App() {
             </div></>}
         <div className="range-options">{([['current','現在の瞬間'],['last15','直近15秒'],['last30','直近30秒']] as const).map(([value,label])=><button key={value} className={analysisRange===value?'selected':''} onClick={()=>setAnalysisRange(value)}>{label}</button>)}</div>
         <button className="analyze-button" disabled={!!progress || (cameraActive && !recording)} onClick={recording?analyzeLiveRecording:analyzeVideo}>{progress || '戦況解析を開始'}</button>
-        {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span><span>範囲 <b>{analysisMeta.range}</b></span><span>解析方式 <b>{analysisMode==='local'?'APIキー不要・端末内':'高度AI'}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}
+        {analysisMeta&&<div className="analysis-meta"><span>解析対象 <b>{analysisMeta.target}</b></span>{analysisMode==='local'&&<span>カテゴリー <b>{competitionLevel}</b></span>}<span>範囲 <b>{analysisMeta.range}</b></span><span>解析方式 <b>{analysisMode==='local'?'APIキー不要・端末内':'高度AI'}</b></span><span>解析時刻 <time>{analysisMeta.at}</time></span></div>}
         {progress&&<div className="progress" aria-live="polite">{(analysisMode==='local'?['フレーム抽出中','端末内解析中','ゲームプラン生成中']:['フレーム抽出中','AIサーバーへ送信中','ゲームプラン生成中']).map(step=><span key={step} className={progress===step?'active':''}>{step}</span>)}</div>}
         {aiError&&<div className="ai-error" role="alert">{aiError}<small>「APIキー不要」モードなら、AIサーバーなしで利用できます。</small></div>}
       </section>
@@ -297,8 +300,21 @@ export default function App() {
 const confidenceLabel: Record<Confidence,string> = { high:'高', medium:'中', low:'低', unknown:'判断困難' }
 function Items({items}:{items:AnalysisItem[]}) { return items.length?<ul>{items.slice(0,3).map((item,i)=><li key={i}><span>{item.text}</span><em className={`confidence ${item.confidence}`}>{confidenceLabel[item.confidence]}</em></li>)}</ul>:<p className="unknown">判断困難</p> }
 function GamePlan({result,mode,showTimeout,onTimeout,onAddTimeline}:{result:AiAnalysis;mode:'local'|'advanced';showTimeout:boolean;onTimeout:()=>void;onAddTimeline:()=>void}) {
-  return <section className="game-plan panel"><div className="plan-head"><div><small>{mode==='local'?'LOCAL TACTICAL ANALYSIS':'AI VIDEO ANALYSIS'}</small><h2>{mode==='local'?'LOCAL GAME PLAN':'AI GAME PLAN'}</h2></div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
-    <div className="plan-grid"><article><b>① 現在の戦況</b><p>{result.summary}</p></article><article><b>② 今うまくいっていること</b><Items items={result.working}/></article><article><b>③ 最優先で直すこと</b><Items items={result.priorityFix}/></article><article><b>④ 次の3ポゼッション</b><Items items={result.nextThreePossessions}/></article><article><b>⑤ 相手への対策</b><Items items={result.opponentCounter}/></article><article><b>⑥ 継続すべき攻撃</b><Items items={result.continueOffense}/></article></div>
+  const coaching = result.coaching
+  return <section className="game-plan panel"><div className="plan-head"><div><small>{mode==='local'?'LOCAL TACTICAL ANALYSIS':'AI VIDEO ANALYSIS'}</small><h2>{mode==='local'?'COACHING GAME PLAN':'AI GAME PLAN'}</h2>{coaching&&<span className="level-badge">{coaching.level}向け</span>}</div><em className={`confidence ${result.confidence}`}>総合信頼度 {confidenceLabel[result.confidence]}</em></div>
+    {coaching ? <>
+      <div className="situation-summary"><b>現在の戦況</b><p>{result.summary}</p></div>
+      <div className="coaching-grid">
+        <article className="good-card"><b>① うまくいっているプレー</b><Items items={coaching.goodPlay}/></article>
+        <article className="weak-card"><b>② うまくできていないプレー</b><Items items={coaching.weakPlay}/></article>
+        <article className="fix-card"><b>③ いま修正すべき点</b><Items items={coaching.correction}/></article>
+        <article><b>④ 技術的なアドバイス</b><Items items={coaching.technical}/></article>
+        <article><b>⑤ 精神的なアドバイス</b><Items items={coaching.mental}/></article>
+        <article className="sub-card"><b>⑥ 交代を考えるサイン</b><Items items={coaching.substitution}/></article>
+        <article className="opponent-card"><b>⑦ 抑えるべき相手プレーヤー</b><Items items={coaching.opponentPlayer}/></article>
+        <article><b>⑧ 次の3ポゼッション</b><Items items={result.nextThreePossessions}/></article>
+      </div>
+    </> : <div className="plan-grid"><article><b>① 現在の戦況</b><p>{result.summary}</p></article><article><b>② 今うまくいっていること</b><Items items={result.working}/></article><article><b>③ 最優先で直すこと</b><Items items={result.priorityFix}/></article><article><b>④ 次の3ポゼッション</b><Items items={result.nextThreePossessions}/></article><article><b>⑤ 相手への対策</b><Items items={result.opponentCounter}/></article><article><b>⑥ 継続すべき攻撃</b><Items items={result.continueOffense}/></article></div>}
     <div className="plan-actions"><button className="timeout-button" onClick={onTimeout}>30秒で選手に伝える</button><button onClick={onAddTimeline}>解析重要場面をタイムラインへ追加</button></div>{showTimeout&&<div className="timeout-message"><b>TIMEOUT MESSAGE</b><p>{result.timeoutMessage}</p></div>}
   </section>
 }
