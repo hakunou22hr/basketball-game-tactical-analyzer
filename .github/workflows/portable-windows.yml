@@ -37,7 +37,7 @@ jobs:
         run: npm run build
 
       - name: Assemble portable package
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $out = Join-Path $PWD "portable-package"
@@ -49,22 +49,24 @@ jobs:
           Copy-Item "local-ai-server\server.mjs" (Join-Path $out "local-ai-server\server.mjs")
           Copy-Item "local-ai-server\.env.example" (Join-Path $out "local-ai-server\.env.example")
           Copy-Item "local-ai-server\START-AI-SERVER-PORTABLE.bat" (Join-Path $out "START-AI-SERVER.bat")
-          Copy-Item "PORTABLE_WINDOWS_SETUP.md" (Join-Path $out "使い方.md")
+          Copy-Item "PORTABLE_WINDOWS_SETUP.md" (Join-Path $out "PORTABLE_WINDOWS_SETUP.md")
           Copy-Item "dist" (Join-Path $out "dist") -Recurse
 
-          @"
-          Basketball Tactical Analyzer - Portable Windows
-          =================================================
-          1. START-AI-SERVER.bat をダブルクリック
-          2. 初回はメモ帳で OPENAI_API_KEY= の右側にAPIキーを入力して保存
-          3. START-AI-SERVER.bat をもう一度ダブルクリック
-          4. ブラウザで http://localhost:8787 を開く
-
-          Node.js のインストールは不要です。
-          "@ | Set-Content -Encoding UTF8 (Join-Path $out "最初にお読みください.txt")
+          $readme = @(
+            "Basketball Tactical Analyzer - Portable Windows",
+            "=================================================",
+            "1. Double-click START-AI-SERVER.bat",
+            "2. On first run, Notepad opens the settings file.",
+            "3. Enter your OpenAI API key after OPENAI_API_KEY= and save.",
+            "4. Double-click START-AI-SERVER.bat again.",
+            "5. Open http://localhost:8787 in your browser.",
+            "",
+            "Node.js installation is not required."
+          )
+          $readme | Set-Content -Encoding UTF8 (Join-Path $out "README-FIRST.txt")
 
       - name: Create ZIP
-        shell: powershell
+        shell: pwsh
         run: |
           Compress-Archive -Path "portable-package\*" -DestinationPath "Basketball-Tactical-Analyzer-Portable.zip" -Force
 
